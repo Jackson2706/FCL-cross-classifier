@@ -1,0 +1,9 @@
+torch 
+torchvision 
+wandb
+glog
+UMNN
+gdown
+kornia
+timm
+psutil

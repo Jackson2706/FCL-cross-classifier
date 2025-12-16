@@ -1,0 +1,32 @@
+{
+    "log": false,
+    "offlog": false,
+    "wandb": false,
+    "optimizer": "sgd",
+    "datadir": "dataset",
+    "device": "cuda",
+    "device_id": "0",
+    "dataset": "IMAGENET1k",
+    "num_classes": 1000,
+    "model": "CNN",
+    "batch_size": 128,
+    "local_learning_rate": 0.005,
+    "learning_rate_decay": false,
+    "learning_rate_decay_gamma": 0.99,
+    "global_rounds": 600,
+    "local_epochs": 10,
+    "algorithm": "FedAvg",
+    "join_ratio": 1.0,
+    "random_join_ratio": false,
+    "num_clients": 5,
+    "prev": 0,
+    "times": 1,
+    "eval_gap": 1,
+    "out_folder": "out",
+    "note": null,
+    "num_tasks": 1,
+
+    "client_drop_rate": 0.0,
+    "time_threthold": 10000
+
+}

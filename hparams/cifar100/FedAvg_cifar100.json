@@ -1,0 +1,36 @@
+{
+    "algorithm": "FedAvg",
+    "dataset": "CIFAR100",
+    "num_classes": 100,
+    "model": "ResNet18",
+    "model_str": "resnet18",
+    "device": "cuda",
+    "device_id": "0",
+
+    "log": true,
+    "offlog": false,
+    "wandb": false,
+    "out_folder": "out",
+    "note": "FedAvg_Fair_Comparison",
+
+    "optimizer": "adam",
+    "batch_size": 32,
+    "local_learning_rate": 0.001,
+    "learning_rate_decay": true,
+    "learning_rate_decay_gamma": 0.99,
+
+    "num_clients": 10,
+    "join_ratio": 1.0,
+    "random_join_ratio": false,
+    "client_drop_rate": 0.0,
+    "prev": 0,
+    "times": 1,
+
+    "global_rounds": 50,
+    "local_epochs": 5,
+    "eval_gap": 1,
+    "time_threthold": 10000,
+
+    "num_tasks": 50,
+    "cpt": 20
+}

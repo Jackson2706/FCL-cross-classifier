@@ -186,7 +186,7 @@ if __name__ == "__main__":
     parser.add_argument('--offlog', type=bool, default=False, help='Save wandb logger')
     parser.add_argument('--log', type=bool, default=False, help='Print logger')
     parser.add_argument('--debug', type=bool, default=False, help='When use Debug, turn off forgetting')
-    parser.add_argument('--cpt', type=int, default=2, help='Class per task')
+    # parser.add_argument('--cpt', type=int, default=2, help='Class per task')
     parser.add_argument('--nt', type=int, default=None, help='Num tasks')
     parser.add_argument('--seval', action='store_true', help='Log Spatio Gradient')
     parser.add_argument('--teval', action='store_true', help='Log Temporal Gradient')
@@ -207,7 +207,6 @@ if __name__ == "__main__":
     cfdct['offlog'] = args.offlog
     cfdct['log'] = args.log
     cfdct['debug'] = args.debug
-    cfdct['cpt'] = args.cpt
     cfdct['seval'] = args.seval
     cfdct['teval'] = args.teval
     cfdct['pca_eval'] = args.pca_eval

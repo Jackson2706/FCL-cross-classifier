@@ -171,45 +171,6 @@ class Server(object):
             acc, _ = client.test_metrics(task=t0_id)
             client.acc_l_t0_init = acc if acc > 0 else 0.01
 
-    # def set_clients(self, clientObj):
-    #     self.global_task_label_mapping = self.global_task_labels
-
-    #     for i in range(self.num_clients):
-    #         print(f"Creating client {i} ...")
-    #         # Lấy Task ID thực tế từ trình tự ngẫu nhiên của client i
-    #         initial_task_id = self.client_task_sequences[i][0]
-    #         target_labels = self.global_task_labels[initial_task_id]
-    #         if self.args.dataset == 'IMAGENET1k':
-    #             read_func = read_client_data_FCL_imagenet1k
-    #         elif self.args.dataset == 'CIFAR100':
-    #             read_func = read_client_data_FCL_cifar100
-    #         elif self.args.dataset == 'CIFAR10':
-    #             read_func = read_client_data_FCL_cifar10
-    #         else:
-    #             raise NotImplementedError("Not supported dataset")
-
-    #         train_data, label_info = read_func(i, task=initial_task_id, classes_per_task=self.args.cpt, count_labels=True)
-
-    #         # 4. Khởi tạo Client
-    #         client = clientObj(self.args, id=i, train_data=train_data, task_sequence=self.client_task_sequences[i])
-            
-    #         # --- ÉP METADATA THEO CHUẨN SERVER ---
-    #         client.current_task_id = initial_task_id
-    #         client.file_name = self.file_name
-            
-    #         # QUAN TRỌNG: Gán nhãn chuẩn từ Server để các client cùng Task ID sẽ dùng chung Output Neurons
-    #         # Nếu hàm read_func trả về nhãn sai (trùng), ta ghi đè bằng nhãn chuẩn
-    #         actual_labels = list(target_labels) 
-            
-    #         client.task_dict[initial_task_id] = actual_labels
-    #         client.current_labels = actual_labels
-    #         client.classes_so_far = actual_labels
-            
-    #         self.clients.append(client)
-    #         print(f"Client {i:02d} | Task {initial_task_id} | Samples: {len(train_data)} | Classes: {len(label_info['labels'])}")
-
-    #     self.print_task_curriculum()
-
     def select_clients(self):
         if self.random_join_ratio:
             self.current_num_join_clients = np.random.choice(range(self.num_join_clients, self.num_clients+1), 1, replace=False)[0]
@@ -617,7 +578,7 @@ class Server(object):
             t_corr, t_samp = 0, 0
             for c in self.clients:
                 # Evaluation of Global Model on specific Task ID
-                ct, ns = c.test_metrics(task=t_id, model_to_use=self.global_model)
+                ct, ns = c.test_metrics(task=t_id)
                 t_corr += ct
                 t_samp += ns
             
@@ -652,12 +613,12 @@ class Server(object):
             wandb.log({f"Visual/tSNE_Task_{step_idx+1}": wandb.Image(plt)}, step=glob_iter)
         plt.close()
 
-    def change_task(self):
+    def change_task(self, step, glob_iter):
         # Chỉ số 1: Table 1 - Accuracy Matrix (Global Model trên từng Task ID)
         self.calculate_table1_accuracy(step, glob_iter)
         
         # Chỉ số 2 & 3: Temporal và Spatial Knowledge Retention
-        self.compute_knowledge_retention(step, glob_iter)
+        self.compute_knowledge_retention(glob_iter)
         
         # Chỉ số 4: Trực quan hóa t-SNE
         self.visualize_tsne(step, glob_iter)

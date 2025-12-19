@@ -158,38 +158,22 @@ class Client(object):
         for param, new_param in zip(model.parameters(), new_params):
             param.data = new_param.data.clone()
 
-    def test_metrics(self, task=None):
-        self.model.eval()
+    def test_metrics(self, task, model_to_use=None):
+        # Nếu không truyền model, mặc định dùng model của client
+        model = model_to_use if model_to_use is not None else self.model
+        model.eval()
         
-        # Nếu truyền task cụ thể (ví dụ: Task 0, 1, 2, 3, hoặc 4)
-        if task is not None:
-            # Kiểm tra xem client này ĐÃ TỪNG học task này chưa
-            if task not in self.tasks_seen_so_far and task != self.current_task_id:
-                # Nếu chưa học, trả về (0, 0) để không đóng góp vào kết quả trung bình của task đó
-                return 0, 0
-            
-            # Chỉ nạp tập test của đúng Task ID đó
-            test_datasets = [self.load_test_data(task=task)]
-        else:
-            # Nếu không truyền task, mặc định test trên toàn bộ những gì đã học (để log tiến độ chung)
-            history_tasks = self.tasks_seen_so_far + [self.current_task_id]
-            test_datasets = [self.load_test_data(task=tid) for tid in history_tasks]
-
-        testloader = DataLoader(
-            ConcatDataset(test_datasets),
-            batch_size=self.batch_size,
-            shuffle=False
-        )
-
-        test_acc, test_num = 0, 0
+        test_data = self.load_test_data(task=task)
+        loader = DataLoader(test_data, batch_size=self.batch_size, shuffle=False)
+        
+        correct, total = 0, 0
         with torch.no_grad():
-            for x, y in testloader:
+            for x, y in loader:
                 x, y = x.to(self.device), y.to(self.device)
-                output = self.model(x)
-                test_acc += (torch.sum(torch.argmax(output, dim=1) == y)).item()
-                test_num += y.shape[0]
-        
-        return test_acc, test_num
+                out = model(x)
+                correct += (torch.argmax(out, dim=1) == y).sum().item()
+                total += y.size(0)
+        return correct, total
 
     def train_metrics(self, task):
         trainloader = self.load_train_data(task=task)

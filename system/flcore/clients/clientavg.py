@@ -21,9 +21,7 @@ class clientAVG(Client):
 
         # Vòng lặp training cục bộ
         for epoch in range(max_local_epochs):
-            torch.cuda.empty_cache()
             for i, (x, y) in enumerate(trainloader):
-                torch.cuda.empty_cache()
                 if isinstance(x, list):
                     x = x[0]
                 x = x.to(self.device)

@@ -13,6 +13,7 @@ class clientAVG(Client):
         """
         Train model cục bộ trên dữ liệu của task hiện tại.
         """
+        print(f"[Client-side] ID: {self.id}, task-id: {task}")
         trainloader = self.load_train_data(task=task)
         self.model.train()
         

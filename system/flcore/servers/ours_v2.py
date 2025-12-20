@@ -6,57 +6,21 @@ import numpy as np
 from torch import nn, optim
 from flcore.servers.serverbase import Server
 from flcore.clients.ours_v2 import clientOursV2
-
-# ==========================================
-# 1. GENERATOR CLASS 
-# ==========================================
-class Generator(nn.Module):
-    def __init__(self, nz=100, ngf=64, img_size=32, nc=3, num_classes=100, device=None):
-        super(Generator, self).__init__()
-        self.params = (nz, ngf, img_size, nc, num_classes) 
-        self.init_size = img_size // 4
-        self.device = device
-        self.label_emb = nn.Embedding(num_classes, nz)
-        self.l1 = nn.Sequential(nn.Linear(nz * 2, ngf * 2 * self.init_size ** 2))
-
-        self.conv_blocks = nn.Sequential(
-            nn.BatchNorm2d(ngf * 2),
-            nn.Upsample(scale_factor=2),
-            nn.Conv2d(ngf*2, ngf*2, 3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(ngf*2),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Upsample(scale_factor=2),
-            nn.Conv2d(ngf*2, ngf, 3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(ngf),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(ngf, nc, 3, stride=1, padding=1),
-            nn.Sigmoid(),  
-        )
-
-    def forward(self, z, labels):
-        c = self.label_emb(labels)
-        gen_input = torch.cat((z, c), -1)
-        out = self.l1(gen_input)
-        out = out.view(out.shape[0], -1, self.init_size, self.init_size)
-        img = self.conv_blocks(out)
-        return img
-
-    def clone(self):
-        clone = Generator(self.params[0], self.params[1], self.params[2], self.params[3], self.params[4], device=self.device)
-        clone.load_state_dict(self.state_dict())
-        return clone.to(self.device)
+from flcore.utils_core.target_utils import Generator
 
 def weight_init(m):
-    if isinstance(m, (nn.Conv2d, nn.Linear)):
-        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find('BatchNorm') != -1:
+        nn.init.normal_(m.weight.data, 1.0, 0.02)
+        nn.init.constant_(m.bias.data, 0)
+    elif isinstance(m, nn.Linear):
+        nn.init.xavier_uniform_(m.weight)
         if m.bias is not None: nn.init.constant_(m.bias, 0)
-    elif isinstance(m, nn.BatchNorm2d):
-        nn.init.constant_(m.weight, 1)
-        nn.init.constant_(m.bias, 0)
-
 
 # ==========================================
-# 2. SERVER CLASS
+# 2. SERVER CLASS (Finalized)
 # ==========================================
 class OursV2(Server):
     def __init__(self, args, times):
@@ -64,241 +28,265 @@ class OursV2(Server):
         self.Budget = []
         
         # --- Config Generator ---
-        if 'cifar' in self.dataset.lower():
-            self.img_size = 32; self.nz = 256
+        # Tự động chỉnh size dựa trên dataset
+        if 'cifar100' in self.dataset.lower():
+            self.img_size = 32
+            self.nz = 512 # Tăng nz lên chút cho Cifar100
         elif 'imagenet' in self.dataset.lower():
-            self.img_size = 64 if '100' in self.dataset else 224; self.nz = 256
+            self.img_size = 64 if '100' in self.dataset else 224 # ImageNet-R thường resize về 64 hoặc 224
+            self.nz = 256
         else:
-            self.img_size = 64; self.nz = 100
+            self.img_size = 32
+            self.nz = 100
 
         self.global_generator = Generator(
-            nz=self.nz, ngf=64, img_size=self.img_size, nc=3, device=self.device, 
-            num_classes=args.num_classes,
+            nz=self.nz, ngf=64, img_size=self.img_size, nc=3, 
+            num_classes=args.num_classes, device=self.device
         ).to(self.device)
+        
+        # Khởi tạo weight ngay từ đầu
+        self.global_generator.apply(weight_init)
 
         # [NEW] Placeholder for the Anchor (Previous Generator)
         self.prev_generator = None
-        self.has_initialized_generator = False 
         
         # Hyperparameters
-        self.g_lr = getattr(args, 'g_lr', 0.001)     
+        self.g_lr = getattr(args, 'g_lr', 0.0002) # GAN thường dùng LR thấp hơn (0.0002 là chuẩn của Adam)
         self.c_lr = getattr(args, 'c_lr', 0.001)     
         self.g_steps = getattr(args, 'g_steps', 100) 
-        self.k_steps = getattr(args, 'k_steps', 100) 
+        self.k_steps = getattr(args, 'k_steps', 200) # Tăng step distillation lên chút
         self.batch_size_gen = 64
         self.T = getattr(args, 'T', 2.0)             
         
         self.set_clients(clientOursV2)
-        print(f"Server Initialized. Generator Config: nz={self.nz}")
+        print(f"Server Initialized. Generator Config: ImgSize={self.img_size}, nz={self.nz}, Device={self.device}")
 
     def train(self):
         for task in range(self.args.num_tasks):
             print(f"\n================ Current Task: {task} =================")
             self.current_task = task
-            self._update_label_info()
-            if task > 0: self._load_task_data_for_clients(task)
-
-            # [ANCHOR SETUP] Before starting a new task (if > 0), snapshot the generator
-            if task > 0 and self.prev_generator is None:
-                print(f">>> [Task {task}] Creating Anchor from Previous Task Generator...")
-                self.prev_generator = self.global_generator.clone()
-                self.prev_generator.eval()
-                for p in self.prev_generator.parameters(): p.requires_grad = False
-
             # -----------------------------------------------
             # Loop Rounds
             # -----------------------------------------------
+            self.send_models()
             for i in range(self.global_rounds):
+                print(f"\n-------------Round number: {i}-------------")
                 s_t = time.time()
                 glob_iter = i + self.global_rounds * task
                 
                 # 1. Send Models
-                self.selected_clients = self.select_clients()
-                self.send_models() 
-
-                if i % self.eval_gap == 0:
-                    print(f"\n-------------Round number: {i}-------------")
-                    self.eval(task=task, glob_iter=glob_iter, flag="global")
-
+                self.selected_clients = self.select_clients() 
+                    
                 # 2. Local Training
                 for client in self.selected_clients:
-                    client.train(task=task)
-
-                if i % self.eval_gap == 0:
-                    self.eval(task=task, glob_iter=glob_iter, flag="local")
-
-                # 3. Receive Models
-                self.receive_models() 
-                
-                # -----------------------------------------------
-                # 4. Aggregation Logic (Task 0 vs Task > 0)
-                # -----------------------------------------------
-                
-                # Step A: Always do FedAvg (Base Aggregation)
-                self.aggregate_parameters()
-
-                # Step B: If Task > 0, we ADD Distillation during the rounds
-                # "I want to use distillation... combine this with averaging"
-                if task > 0 and i < self.global_rounds - 1:
-                    # Run a lighter version of KD (e.g., 50 steps) to mix past knowledge
-                    # into the current FedAvg weights
-                    self.train_global_classifier(self.available_labels_current, steps=50)
-
-                # -----------------------------------------------
-                # 5. End of Task Logic (Round R)
-                # -----------------------------------------------
-                if i == self.global_rounds - 1:
-                    print(f"\n>>> [Round R] End of Task {task} detected.")
-                    
-                    # A. Train Generator
-                    # Task 0: Train normally. 
-                    # Task > 0: Train with Anchor.
-                    use_anchor = (task > 0)
-                    self.train_global_generator(self.available_labels_current, use_anchor=use_anchor)
-
-                    # B. Train Classifier (Full Distillation)
-                    # Now that Generator is updated, distill knowledge into Classifier
-                    self.train_global_classifier(self.available_labels_current, steps=self.k_steps)
-
-                    # C. Update Anchor for NEXT task
-                    # We take the freshly trained generator and save it as the new anchor
-                    self.prev_generator = self.global_generator.clone()
-                    self.prev_generator.eval()
-                    for p in self.prev_generator.parameters(): p.requires_grad = False
-                
+                    client.train(task=self.client_task_sequences[client.id][task])
+                self.eval(task=task, glob_iter=glob_iter, flag="local")
                 self.Budget.append(time.time() - s_t)
                 print(f"Round {i} Time: {self.Budget[-1]:.2f}s")
-
-            # Final Eval
-            if self.args.offlog:
-                print(f"\n>>> Task {task} Finished. Evaluating Forgetting Rate...")
-                # Gửi model mới nhất xuống client để test
-                self.send_models() 
-                # Hàm eval_task trong ServerBase sẽ tính toán và log Forgetting
-                self.eval_task(task=task, glob_iter=glob_iter, flag="global")
+            self.receive_models()
+            self.train_global_generator()
+            self.train_global_classifier()
+            print(f"\n>>> {task} task(s) is/are finished. Evaluating Forgetting Rate...")
+            self.send_models() 
+            self.eval(task=task, glob_iter=glob_iter, flag="global")
+            self.eval_task(task=task, glob_iter=task, flag="global")
 
             self.change_task(task, (task + 1)*self.global_rounds)
 
 
-    def train_global_generator(self, available_labels, use_anchor=False):
-        labels_list = list(available_labels)
-        if len(labels_list) == 0: return
+    
 
-        if not self.has_initialized_generator:
-            self.global_generator.apply(weight_init)
-            self.has_initialized_generator = True
+    def train_global_generator(self):
+        print(f"[Server-side] Start training Generator")
         
+        # --- 1. Label Setup ---
+        available_labels = []
+        for _, v in self.client_info_dict.items():
+            available_labels.extend(v["label"])
+        
+        # Clean labels
+        try:
+            labels_list = [int(x) for x in set(available_labels)]
+        except ValueError:
+            print("Error: Labels must be convertible to integers.")
+            return
+
+        if len(labels_list) == 0:
+            print("No labels found. Skipping generator training.")
+            return
+
+        # --- 2. Model Setup ---
         self.global_generator.train()
-        
-        # Freeze Teachers
-        teachers = self.uploaded_models
-        for t in teachers: t.eval(); 
-        for p in t.parameters(): p.requires_grad = False
-
-        optimizer_g = optim.Adam(self.global_generator.parameters(), lr=self.g_lr)
-        criterion_gan = nn.CrossEntropyLoss()
-        mse_loss = nn.MSELoss() # [NEW] For Anchor
-        
-        # Anchor Strength
+        optimizer_g = optim.Adam(self.global_generator.parameters(), lr=self.g_lr, betas=(0.5, 0.999))
+        criterion_ce = nn.CrossEntropyLoss()
+        mse_loss = nn.MSELoss() 
         alpha = 10.0 
-
-        print(f"   -> Training Generator (Anchor={use_anchor})...")
+        
+        # --- 3. Training Loop ---
         for step in range(self.g_steps):
             optimizer_g.zero_grad()
             
             # Sample
-            labels = np.random.choice(labels_list, self.batch_size_gen)
-            labels = torch.tensor(labels).long().to(self.device)
+            selected_labels = np.random.choice(labels_list, self.batch_size_gen)
+            labels_tensor = torch.tensor(selected_labels, dtype=torch.long).to(self.device)
             z = torch.randn(self.batch_size_gen, self.nz).to(self.device)
 
-            gen_imgs = self.global_generator(z, labels)
+            # Generate (Gradient starts here)
+            gen_imgs = self.global_generator(z, labels_tensor)
 
-            # 1. Classification Loss (Teachers)
-            total_loss = 0
-            for teacher in teachers:
-                preds = teacher(gen_imgs)
-                total_loss += criterion_gan(preds, labels)
-            loss_g = total_loss / len(teachers)
+            # --- Classification Loss ---
+            total_ce_loss = 0  # <--- Defined here
+            valid_teachers_count = 0
+            
+            for client_id, info in self.client_info_dict.items():
+                teacher_model = info["model"]
+                teacher_labels = info["label"] 
 
-            # 2. [NEW] Anchor Loss
-            if use_anchor and self.prev_generator is not None:
-                with torch.no_grad():
-                    # Generate images using the OLD generator with SAME noise
-                    anchor_imgs = self.prev_generator(z, labels)
+                mask = np.isin(selected_labels, teacher_labels)
                 
-                # MSE ensures structural similarity (prevents forgetting old classes)
+                if mask.sum() > 0:
+                    valid_teachers_count += 1
+                    mask_tensor = torch.tensor(mask).to(self.device)
+                    
+                    relevant_imgs = gen_imgs[mask_tensor]
+                    relevant_labels = labels_tensor[mask_tensor]
+                    
+                    teacher_model.eval() 
+                    for param in teacher_model.parameters():
+                        param.requires_grad = False
+                    
+                    preds = teacher_model(relevant_imgs)
+                    
+                    # --- FIX IS HERE ---
+                    # WAS: total_loss += ... (Wrong variable name)
+                    # NOW: total_ce_loss += ...
+                    total_ce_loss += criterion_ce(preds, relevant_labels)
+
+            # Initialize loss_g safely
+            if valid_teachers_count > 0:
+                loss_g = total_ce_loss / valid_teachers_count
+            else:
+                # If no teachers found for this batch, loss is 0.
+                # Use requires_grad=True to prevent crash, effectively a "no-op" update
+                loss_g = torch.tensor(0.0, device=self.device, requires_grad=True)
+
+            # --- Anchor Loss ---
+            if self.prev_generator is not None:
+                self.prev_generator.eval()
+                for param in self.prev_generator.parameters():
+                    param.requires_grad = False
+                    
+                # anchor_imgs must be detached from graph (no_grad)
+                anchor_imgs = self.prev_generator(z, labels_tensor)
+                
                 loss_anchor = mse_loss(gen_imgs, anchor_imgs)
-                loss_g += alpha * loss_anchor
+                loss_g = loss_g + alpha * loss_anchor 
+                # Note: 'loss_g + ...' creates a new tensor node with grad history
 
-            loss_g.backward()
-            optimizer_g.step()
+            # --- Backprop ---
+            print(f"[Server-side] Loss of Generator at step {step}: {loss_g}")
+            if loss_g.requires_grad:
+                loss_g.backward()
+                optimizer_g.step()
+            else:
+                # This should rarely happen now
+                print(f"[Server-side] Warning: No gradients flow. (Teachers: {valid_teachers_count})")
+        
+        # Update Anchor (Do this at end of TASK, not here if you call this every round)
+        self.prev_generator = copy.deepcopy(self.global_generator)
+        
 
-    def train_global_classifier(self, available_labels, steps=100):
-        labels_list = list(available_labels)
-        if len(labels_list) == 0: return
-
+    def train_global_classifier(self, steps=100):
+        print(f"[Server-side] Start training Global Classifier")
+        available_labels = []
+        for _, v in self.client_info_dict.items():
+            label = list(v["label"])
+            available_labels.extend(label)
+        labels_list = list(set(available_labels))
+        # 1. Setup Student (Global Model)
         self.global_model.train() 
-        for param in self.global_model.parameters(): param.requires_grad = True
+        for param in self.global_model.parameters(): 
+            param.requires_grad = True
+        
+        # 2. Setup Generator (Fixed)
         self.global_generator.eval()
 
-        teachers = self.uploaded_models
-        for t in teachers: t.eval(); 
-        for p in t.parameters(): p.requires_grad = False
-            
         optimizer_c = optim.Adam(self.global_model.parameters(), lr=self.c_lr)
         criterion_kd = nn.KLDivLoss(reduction='batchmean')
 
-        # print(f"   -> Distilling into Classifier ({steps} steps)...")
         for step in range(steps):
-            labels = np.random.choice(labels_list, self.batch_size_gen)
-            labels = torch.tensor(labels).long().to(self.device)
+            optimizer_c.zero_grad()
+
+            # --- A. Generate Synthetic Data ---
+            # Randomly sample labels from the pool of all available labels
+            selected_labels = np.random.choice(labels_list, self.batch_size_gen)
+            labels_tensor = torch.tensor(selected_labels).long().to(self.device)
             z = torch.randn(self.batch_size_gen, self.nz).to(self.device)
 
-            with torch.no_grad():
-                gen_imgs = self.global_generator(z, labels)
+            # with torch.no_grad():
+            gen_imgs = self.global_generator(z, labels_tensor)            
 
-            # Teacher Ensemble
-            teacher_logits_sum = 0
-            with torch.no_grad():
-                for teacher in teachers:
-                    teacher_logits_sum += teacher(gen_imgs)
-            teacher_avg_logits = teacher_logits_sum / len(teachers)
-
-            # Student
+            # --- B. Student Forward Pass ---
             student_logits = self.global_model(gen_imgs)
 
-            # KL Loss
+            # --- C. Teacher Ensemble (Selective Distillation) ---
+            teacher_logits_sum = torch.zeros_like(student_logits)
+            # Count how many teachers contributed to each image in the batch
+            # Shape: [Batch_Size, 1]
+            teacher_counts = torch.zeros(self.batch_size_gen, 1, device=self.device)
+            
+            # Iterate over all available client models (teachers)
+            for client_id, info in self.client_info_dict.items():
+                teacher_model = info["model"]
+                teacher_known_labels = info["label"] # List of labels this client knows
+
+                # Create a Boolean Mask: [Batch_Size]
+                # True if the image's label is known by this client
+                # We use numpy.isin for efficiency on the label array
+                mask_np = np.isin(selected_labels, teacher_known_labels)
+                
+                # If this client knows at least one label in the batch
+                if mask_np.sum() > 0:
+                    mask_tensor = torch.tensor(mask_np, device=self.device).unsqueeze(1) # Shape [B, 1]
+
+                    teacher_model.eval()
+                    # with torch.no_grad():
+                        # Get logits for the whole batch (computationally cheaper than slicing usually)
+                    logits = teacher_model(gen_imgs)
+                    
+                    # Accumulate logits ONLY where mask is True
+                    # If mask is False (0), we add 0.0
+                    teacher_logits_sum += logits * mask_tensor
+                    teacher_counts += mask_tensor
+
+            # --- D. Compute Loss ---
+            # Avoid division by zero (if a label somehow has 0 teachers, though unlikely if logic is correct)
+            teacher_counts[teacher_counts == 0] = 1.0 
+            
+            # Average the logits to get the "Ensemble Teacher"
+            teacher_avg_logits = teacher_logits_sum / teacher_counts
+
+            # KL Divergence Loss
+            # We assume the "Teacher" is the Softmax of the averaged logits
             loss_kd = criterion_kd(
                 F.log_softmax(student_logits / self.T, dim=1),
                 F.softmax(teacher_avg_logits / self.T, dim=1)
             ) * (self.T * self.T)
 
-            optimizer_c.zero_grad()
             loss_kd.backward()
             optimizer_c.step()
 
     def send_models(self):
         for client in self.clients:
             client.set_parameters(self.global_model)
+            # Nếu client cần dùng Generator để Replay cục bộ (nếu thuật toán yêu cầu)
             client.set_generator_parameters(self.global_generator)
 
-    def _update_label_info(self):
-        available_labels = set()
-        for u in self.clients:
-            available_labels = available_labels.union(set(u.classes_so_far))
-        self.available_labels_current = available_labels
-
-    def _load_task_data_for_clients(self, task):
-        # (Assuming your imports are correct here)
-        if self.args.dataset == 'IMAGENET1k':
-            from utils.data_utils import read_client_data_FCL_imagenet1k as read_func
-        elif 'CIFAR100' in self.args.dataset:
-            from utils.data_utils import read_client_data_FCL_cifar100 as read_func
-        else:
-            from utils.data_utils import read_client_data_FCL_cifar10 as read_func
-        
-        for i, client in enumerate(self.clients):
-            train_data, label_info = read_func(
-                i, task=task, classes_per_task=self.args.cpt, count_labels=True
-            )
-            client.next_task(train_data, label_info)
+    def receive_models(self):
+        print(f"[Server-side] Receive models and lists of labels from clients")
+        self.client_info_dict = {}
+        for client in self.clients:
+            self.client_info_dict[client.id] = {
+                "model": client.model,
+                "label": client.unique_labels
+            }

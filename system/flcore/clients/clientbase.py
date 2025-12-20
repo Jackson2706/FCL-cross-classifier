@@ -76,6 +76,7 @@ class Client(object):
         self.curriculum_step = 0
         self.current_task_id = task_sequence[0]
         self.tasks_seen_so_far = []
+        self.unique_labels = set()
 
     def next_task(self, train, label_info = None, if_label = True):
         

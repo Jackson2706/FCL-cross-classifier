@@ -39,6 +39,8 @@
     "replay_weight": 1.0,
     "nz": 256,
     "latent_dim": 256,
+
+    "kd": 0.5,
     
     "adv": 0.0, 
     "bn": 1.0,

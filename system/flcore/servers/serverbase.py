@@ -60,7 +60,7 @@ class Server(object):
         if self.args.dataset == 'IMAGENET1k':
             self.N_TASKS = 500
         elif self.args.dataset == 'CIFAR100':
-            self.N_TASKS = 50
+            self.N_TASKS = 5
         elif self.args.dataset == 'CIFAR10':
             self.N_TASKS = 5
         if self.args.nt is not None:
@@ -84,6 +84,7 @@ class Server(object):
                 train_data, label_info = read_client_data_FCL_imagenet1k(i, task=0, classes_per_task=self.args.cpt, count_labels=True)
             elif self.args.dataset == 'CIFAR100':
                 train_data, label_info = read_client_data_FCL_cifar100(i, task=0, classes_per_task=self.args.cpt, count_labels=True)
+                print(label_info)
             elif self.args.dataset == 'CIFAR10':
                 train_data, label_info = read_client_data_FCL_cifar10(i, task=0, classes_per_task=self.args.cpt, count_labels=True)
             else:

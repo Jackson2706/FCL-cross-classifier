@@ -13,7 +13,7 @@
     "local_learning_rate": 1e-3,
     "learning_rate_decay": false,
     "learning_rate_decay_gamma": 0.99,
-    "global_rounds": 10,
+    "global_rounds": 50,
     "local_epochs": 5,
     "algorithm": "PreciseFCL",
     "join_ratio": 1.0,

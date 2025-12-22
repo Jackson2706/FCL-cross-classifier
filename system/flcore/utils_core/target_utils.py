@@ -256,42 +256,60 @@ class ImagePool(object):
         return UnlabeledImageDataset(self.root, transform=transform, nums=nums)
 
 
+# ==========================================
+# OPTIMIZED GENERATOR CLASS (Best for CIFAR-100/ImageR)
+# ==========================================
 class Generator(nn.Module):
-    def __init__(self, nz=100, ngf=64, img_size=32, nc=3, device=None):
+    def __init__(self, nz=100, ngf=64, img_size=32, nc=3, num_classes=100, device=None):
         super(Generator, self).__init__()
-        self.params = (nz, ngf, img_size, nc)
-        self.init_size = img_size // 4
-        self.l1 = nn.Sequential(nn.Linear(nz, ngf * 2 * self.init_size ** 2))
         self.device = device
-
-        self.conv_blocks = nn.Sequential(
-            nn.BatchNorm2d(ngf * 2),
-            nn.Upsample(scale_factor=2),
-
-            nn.Conv2d(ngf*2, ngf*2, 3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(ngf*2),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Upsample(scale_factor=2),
-
-            nn.Conv2d(ngf*2, ngf, 3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(ngf),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(ngf, nc, 3, stride=1, padding=1),
-            nn.Sigmoid(),  
+        self.params = (nz, ngf, img_size, nc, num_classes)
+        self.init_size = img_size // 4
+        
+        # Embedding mạnh hơn cho Class Condition
+        self.label_emb = nn.Sequential(
+            nn.Embedding(num_classes, nz),
+            nn.Linear(nz, nz)
         )
 
-    def forward(self, z):
-        out = self.l1(z)
+        # Linear Projection: Tăng độ sâu channel lên gấp 4 lần để giữ thông tin tốt hơn
+        self.l1 = nn.Sequential(
+            nn.Linear(nz * 2, ngf * 4 * self.init_size ** 2),
+            nn.BatchNorm1d(ngf * 4 * self.init_size ** 2),
+            nn.ReLU(True)
+        )
+
+        self.conv_blocks = nn.Sequential(
+            # Block 1: Upsample -> Conv -> BN -> ReLU
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(ngf * 4, ngf * 2, 3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(ngf * 2),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            # Block 2: Upsample -> Conv -> BN -> ReLU
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(ngf * 2, ngf, 3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(ngf),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            # Output Layer: Tanh activation (-1, 1) tốt hơn Sigmoid cho GAN
+            nn.Conv2d(ngf, nc, 3, stride=1, padding=1),
+            nn.Tanh()  
+        )
+
+    def forward(self, z, labels):
+        c = self.label_emb(labels)
+        gen_input = torch.cat((z, c), -1) # Nối noise và label
+        out = self.l1(gen_input)
         out = out.view(out.shape[0], -1, self.init_size, self.init_size)
         img = self.conv_blocks(out)
         return img
 
-    # return a copy of its own
     def clone(self):
-        clone = Generator(self.params[0], self.params[1], self.params[2], self.params[3])
+        # Clone full state để làm Anchor
+        clone = Generator(*self.params, device=self.device)
         clone.load_state_dict(self.state_dict())
         return clone.to(self.device)
-
 
 def kldiv( logits, targets, T=1.0, reduction='batchmean'):
     q = F.log_softmax(logits/T, dim=1)
@@ -526,3 +544,18 @@ def refine_as_not_true(logits, targets, num_classes):
     logits = torch.gather(logits, 1, nt_positions)
 
     return logits
+
+from collections import Counter
+
+def get_class_counts(dataloader):
+    # Khởi tạo bộ đếm
+    counts = Counter()
+    
+    # Duyệt qua từng batch trong dataloader
+    for x, y in dataloader:
+        # 'y' là một Tensor chứa nhãn của batch (ví dụ: tensor([1, 0, 1, 2]))
+        # .tolist() chuyển nó về dạng list Python (ví dụ: [1, 0, 1, 2]) để Counter đếm được
+        counts.update(y.tolist())
+        
+    # Trả về kết quả (sắp xếp theo key để dễ nhìn)
+    return dict(sorted(counts.items()))

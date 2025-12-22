@@ -22,7 +22,7 @@ from flcore.servers.servertarget import FedTARGET
 from flcore.servers.serverl2p import FedL2P
 from flcore.servers.serverssi import FedSSI
 from flcore.servers.serverrefedplus import ReFedPlus
-
+from flcore.servers.ours_v2 import OursV2
 from flcore.trainmodel.models import *
 
 from flcore.trainmodel.AFFCL_models import AFFCLModel
@@ -42,10 +42,10 @@ torch.manual_seed(0)
 def run(args):
     
     if args.wandb:
-        wandb.login(key="b1d6eed8871c7668a889ae74a621b5dbd2f3b070")
+        wandb.login(key="22e152c33a1e551f449b7a2f029bf1258f6e8367")
         wandb.init(
             project="FCL",
-            entity="letuanhf-hanoi-university-of-science-and-technology",
+            entity="jackson2706",
             config=args, 
             name=f"{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}_{args.note}" if args.note else f"{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}", 
         )
@@ -163,7 +163,11 @@ def run(args):
             args.model.fc = nn.Identity()
             args.model = BaseHeadSplit(args.model, args.head)
             server = FedL2P(args, i)
-
+        elif args.algorithm == "Ours_v2":
+            args.head = copy.deepcopy(args.model.fc)
+            args.model.fc = nn.Identity()
+            args.model = BaseHeadSplit(args.model, args.head)
+            server = OursV2(args, i)
         else:
             raise NotImplementedError
 
@@ -186,7 +190,7 @@ if __name__ == "__main__":
     parser.add_argument('--offlog', type=bool, default=False, help='Save wandb logger')
     parser.add_argument('--log', type=bool, default=False, help='Print logger')
     parser.add_argument('--debug', type=bool, default=False, help='When use Debug, turn off forgetting')
-    parser.add_argument('--cpt', type=int, default=2, help='Class per task')
+    parser.add_argument('--cpt', type=int, default=20, help='Class per task')
     parser.add_argument('--nt', type=int, default=None, help='Num tasks')
     parser.add_argument('--seval', action='store_true', help='Log Spatio Gradient')
     parser.add_argument('--teval', action='store_true', help='Log Temporal Gradient')

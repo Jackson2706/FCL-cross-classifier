@@ -13,10 +13,7 @@ class ProtoNet_Loss(nn.Module):
     def forward(self, input, target):
         return prototypical_loss(input, target, self.n_support)
 
-(''
- ''
- ''
- '')
+
 class OnPro_Loss(nn.Module):
     def __init__(self):
         self.loss = nn.MSELoss()

@@ -20,8 +20,9 @@ from flcore.servers.serverweit import FedWeIT
 from flcore.servers.serveraffcl import FedAFFCL
 from flcore.servers.servertarget import FedTARGET
 from flcore.servers.serverl2p import FedL2P
-from flcore.servers.ours import Ours
-from flcore.servers.ours_v2 import OursV2
+from flcore.servers.serverssi import FedSSI
+from flcore.servers.serverrefedplus import ReFedPlus
+
 from flcore.trainmodel.models import *
 
 from flcore.trainmodel.AFFCL_models import AFFCLModel
@@ -41,10 +42,10 @@ torch.manual_seed(0)
 def run(args):
     
     if args.wandb:
-        wandb.login(key="22e152c33a1e551f449b7a2f029bf1258f6e8367")
+        wandb.login(key="b1d6eed8871c7668a889ae74a621b5dbd2f3b070")
         wandb.init(
             project="FCL",
-            entity="jackson2706",
+            entity="letuanhf-hanoi-university-of-science-and-technology",
             config=args, 
             name=f"{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}_{args.note}" if args.note else f"{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}", 
         )
@@ -72,14 +73,14 @@ def run(args):
                 args.model = FedAvgCNN(in_features=3, num_classes=args.num_classes, dim=10816).to(args.device)
 
         elif model_str == "ResNet50":
-            args.model = torchvision.models.resnet50(num_classes=args.num_classes).to(args.device)
+            args.model = torchvision.models.resnet50(pretrained=False, num_classes=args.num_classes).to(args.device)
         elif model_str == "ResNet50-pretrained":
             weights = torchvision.models.ResNet50_Weights.IMAGENET1K_V1
             args.model = torchvision.models.resnet50(weights=weights, num_classes=args.num_classes).to(args.device)
         elif model_str == "ResNet34":
             args.model = torchvision.models.resnet34(pretrained=False, num_classes=args.num_classes).to(args.device)
         elif model_str == "ResNet18":
-            args.model = torchvision.models.resnet18(num_classes=args.num_classes).to(args.device)
+            args.model = torchvision.models.resnet18(pretrained=False, num_classes=args.num_classes).to(args.device)
         elif model_str == "Swin_t":
             args.model = torchvision.models.swin_t(weights=None, num_classes=args.num_classes).to(args.device)
         elif model_str == "AFFCLModel":    
@@ -101,6 +102,18 @@ def run(args):
             args.model.fc = nn.Identity()
             args.model = BaseHeadSplit(args.model, args.head)
             server = FedAvg(args, i)
+
+        if args.algorithm == "FedSSI":
+            args.head = copy.deepcopy(args.model.fc)
+            args.model.fc = nn.Identity()
+            args.model = BaseHeadSplit(args.model, args.head)
+            server = FedSSI(args, i)
+
+        if args.algorithm == "ReFedPlus":
+            args.head = copy.deepcopy(args.model.fc)
+            args.model.fc = nn.Identity()
+            args.model = BaseHeadSplit(args.model, args.head)
+            server = ReFedPlus(args, i)
 
         elif args.algorithm == "FedALA":
             args.head = copy.deepcopy(args.model.fc)
@@ -151,19 +164,6 @@ def run(args):
             args.model = BaseHeadSplit(args.model, args.head)
             server = FedL2P(args, i)
 
-        elif args.algorithm == "Ours":
-            args.head = copy.deepcopy(args.model.fc)
-            args.model.fc = nn.Identity()
-            args.model = BaseHeadSplit(args.model, args.head)
-            server = Ours(args, i)
-
-        elif args.algorithm == "Ours_v2":
-            args.head = copy.deepcopy(args.model.fc)
-            args.model.fc = nn.Identity()
-            args.model = BaseHeadSplit(args.model, args.head)
-            server = OursV2(args, i)
-        
-
         else:
             raise NotImplementedError
 
@@ -186,7 +186,7 @@ if __name__ == "__main__":
     parser.add_argument('--offlog', type=bool, default=False, help='Save wandb logger')
     parser.add_argument('--log', type=bool, default=False, help='Print logger')
     parser.add_argument('--debug', type=bool, default=False, help='When use Debug, turn off forgetting')
-    # parser.add_argument('--cpt', type=int, default=2, help='Class per task')
+    parser.add_argument('--cpt', type=int, default=2, help='Class per task')
     parser.add_argument('--nt', type=int, default=None, help='Num tasks')
     parser.add_argument('--seval', action='store_true', help='Log Spatio Gradient')
     parser.add_argument('--teval', action='store_true', help='Log Temporal Gradient')
@@ -207,6 +207,7 @@ if __name__ == "__main__":
     cfdct['offlog'] = args.offlog
     cfdct['log'] = args.log
     cfdct['debug'] = args.debug
+    cfdct['cpt'] = args.cpt
     cfdct['seval'] = args.seval
     cfdct['teval'] = args.teval
     cfdct['pca_eval'] = args.pca_eval

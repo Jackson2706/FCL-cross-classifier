@@ -146,7 +146,7 @@ class FedAS(Server):
                 self.aggregate_wrt_fisher()
 
                 if self.args.seval:
-                    self.spatio_grad_eval(model_origin=model_origin, glob_iter=glob_iter)
+                    self.spatio_grad_eval(model_origin=model_origin)
 
                 if self.args.pca_eval:
                     self.proto_eval(model=self.global_model, task=task, round=i)

@@ -1,36 +1,32 @@
 {
-    "algorithm": "FedAvg",
-    "dataset": "CIFAR100",
-    "num_classes": 100,
-    "model": "ResNet18",
-    "model_str": "resnet18",
-    "device": "cuda",
-    "device_id": "0",
-
-    "log": true,
+    "log": false,
     "offlog": false,
     "wandb": false,
-    "out_folder": "out",
-    "note": "FedAvg_Fair_Comparison",
-
-    "optimizer": "adam",
-    "batch_size": 32,
-    "local_learning_rate": 0.001,
-    "learning_rate_decay": true,
+    "optimizer": "sgd",
+    "datadir": "dataset",
+    "device": "cuda",
+    "device_id": "0",
+    "dataset": "CIFAR100",
+    "num_classes": 100,
+    "model": "CNN",
+    "batch_size": 128,
+    "local_learning_rate": 0.005,
+    "learning_rate_decay": false,
     "learning_rate_decay_gamma": 0.99,
-
-    "num_clients": 10,
+    "global_rounds": 25,
+    "local_epochs": 5,
+    "algorithm": "FedAvg",
     "join_ratio": 1.0,
     "random_join_ratio": false,
-    "client_drop_rate": 0.0,
+    "num_clients": 10,
     "prev": 0,
     "times": 1,
-
-    "global_rounds": 50,
-    "local_epochs": 5,
     "eval_gap": 1,
-    "time_threthold": 10000,
+    "out_folder": "out",
+    "note": null,
+    "num_tasks": 250,
 
-    "num_tasks": 5,
-    "cpt": 20
+    "client_drop_rate": 0.0,
+    "time_threthold": 10000
+
 }

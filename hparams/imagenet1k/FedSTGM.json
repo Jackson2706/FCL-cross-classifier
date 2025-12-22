@@ -7,21 +7,21 @@
     "num_classes": 1000,
     "model": "CNN",
     "batch_size": 128,
-    "local_learning_rate": 0.005,
+    "local_learning_rate": 0.05,
     "learning_rate_decay": false,
     "learning_rate_decay_gamma": 0.99,
-    "global_rounds": 600,
-    "local_epochs": 10,
+    "global_rounds": 25,
+    "local_epochs": 5,
     "algorithm": "FedSTGM",
     "join_ratio": 1.0,
     "random_join_ratio": false,
-    "num_clients": 5,
+    "num_clients": 10,
     "prev": 0,
     "times": 1,
     "eval_gap": 1,
     "out_folder": "out",
     "note": null,
-    "num_tasks": 1,
+    "num_tasks": 2500,
 
     "client_drop_rate": 0.0,
     "time_threthold": 10000,
@@ -46,7 +46,7 @@
 
     "tgm_meta_lr": 1,
 
-    "coreset": false,
-    "tgm": false,
+    "coreset": true,
+    "tgm": true,
     "sgm": true
 }

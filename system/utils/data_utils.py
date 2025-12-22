@@ -46,7 +46,7 @@ imagenet_test_transform = transforms.Compose([
 def read_client_data_FCL_imagenet1k(index, task = 0, classes_per_task = 2, count_labels=False, train=True):
     
     datadir = './dataset/imagenet1k-classes/'
-    class_order = np.load('./dataset/class_order/class_order_imagenet1k_100clients.npy', allow_pickle=True)
+    class_order = np.load('./dataset/class_order/class_order_imagenet1k.npy', allow_pickle=True)
 
     class_order = class_order[index]
 
@@ -75,7 +75,7 @@ def read_client_data_FCL_imagenet1k(index, task = 0, classes_per_task = 2, count
 def read_client_data_FCL_cifar100(index, task = 0, classes_per_task = 2, count_labels=False, train=True):
     
     datadir = './dataset/cifar100-classes/'
-    class_order = np.load('./dataset/class_order/class_order_cifar100_100clients.npy', allow_pickle=True)
+    class_order = np.load('./dataset/class_order/class_order_cifar100.npy', allow_pickle=True)
     class_order = class_order[index]
 
     if train:

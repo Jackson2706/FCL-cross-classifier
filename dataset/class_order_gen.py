@@ -21,10 +21,10 @@ def generate_unique_permutations_flat(client_num=100, classes=10, duplicate=20, 
     return array
 
 num_clients = 100
-num_classes = 100
+num_classes = 10
 
 permuted_array = generate_unique_permutations_flat(client_num=num_clients, classes=num_classes)
 
-np.save("/root/projects/FCL/dataset/class_order/class_order_cifar100_100clients.npy", permuted_array)
+np.save("/root/projects/FCL/dataset/class_order/class_order_cifar10.npy", permuted_array)
 
 print(permuted_array.shape)  # (100, 10000)

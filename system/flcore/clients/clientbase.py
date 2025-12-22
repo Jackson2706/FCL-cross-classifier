@@ -73,7 +73,6 @@ class Client(object):
         self.last_copy = None
         self.if_last_copy = False
         self.args = args
-        self.unique_labels = set()
 
     def next_task(self, train, label_info = None, if_label = True):
         
@@ -388,61 +387,12 @@ class Client(object):
         mse = F.mse_loss(params1, params2)
         return mse.item()
 
-    def get_feature_embeddings(self, model=None, task_id=None, num_samples=None):
-        """
-        Extracts feature embeddings as TENSORS (CPU).
-        """
-        if task_id is None:
-            task_id = self.current_task
-            
-        target_model = model if model is not None else self.model
-
-        # Load Test Data
-        dataloader = self.load_test_data(task=task_id, batch_size=self.batch_size)
-        
-        target_model.eval()
-        target_model.to(self.device)
-        
-        features_list = []
-        labels_list = []
-        count = 0
-
-        with torch.no_grad():
-            for x, y in dataloader:
-                if isinstance(x, list):
-                    x[0] = x[0].to(self.device)
-                else:
-                    x = x.to(self.device)
-                
-                # Extract Features
-                if hasattr(target_model, 'base'):
-                    feats = target_model.base(x)
-                else:
-                    feats = x
-                    modules = list(target_model.children())[:-1]
-                    feature_extractor = nn.Sequential(*modules)
-                    feats = feature_extractor(x)
-                    feats = feats.view(feats.size(0), -1)
-
-                # --- SỬA ĐỔI QUAN TRỌNG ---
-                # Giữ nguyên là Tensor, chỉ đưa về CPU để tiết kiệm VRAM
-                features_list.append(feats.detach().cpu()) 
-                labels_list.append(y.detach().cpu())
-                # --------------------------
-                
-                count += len(y)
-                if num_samples is not None and count >= num_samples:
-                    break
-
-        # Gom lại bằng torch.cat thay vì np.concatenate
-        if len(features_list) > 0:
-            features = torch.cat(features_list, dim=0)
-            labels = torch.cat(labels_list, dim=0)
-            
-            if num_samples is not None:
-                features = features[:num_samples]
-                labels = labels[:num_samples]
-                
-            return features, labels
-        else:
-            return torch.tensor([]), torch.tensor([])
+    # def proto_eval(self, model, task, round):
+    #     save_dir = os.path.join("pca_eval", self.file_name, "local")
+    #     if not os.path.exists(save_dir):
+    #         os.makedirs(save_dir)
+    #
+    #     # Save model state_dict
+    #     model_filename = f"task_{task}_round_{round}.pth"
+    #     model_path = os.path.join(save_dir, model_filename)
+    #     torch.save(model.state_dict(), model_path)

@@ -1,96 +1,132 @@
 import time
 import torch
 import copy
-import numpy as np
 from flcore.clients.clientavg import clientAVG
 from flcore.servers.serverbase import Server
-from utils.data_utils import read_client_data_FCL_cifar100, read_client_data_FCL_imagenet1k, read_client_data_FCL_cifar10
+from utils.data_utils import *
+from utils.model_utils import ParamDict
+from torch.nn.utils import vector_to_parameters, parameters_to_vector
+
+from torch.optim.lr_scheduler import StepLR
+import numpy as np
+
+import statistics
+
 
 class FedAvg(Server):
     def __init__(self, args, times):
         super().__init__(args, times)
-        
-        # Gán lớp Client tương ứng
+
         self.set_clients(clientAVG)
-        
-        print(f"\nServer FedAvg Initialized. Join ratio: {self.join_ratio}")
+
+        print(f"\nJoin ratio / total clients: {self.join_ratio} / {self.num_clients}")
+        print("Finished creating server and clients.")
+
+        # self.load_model()
         self.Budget = []
 
     def train(self):
-        # Vòng lặp qua từng Task (Continual Learning)
+
+        if self.args.num_tasks % self.N_TASKS != 0:
+            raise ValueError("Set num_task again")
+
         for task in range(self.args.num_tasks):
-            torch.cuda.empty_cache()
+
             print(f"\n================ Current Task: {task} =================")
-            self.current_task = task
-            
-            # --- 1. SETUP DATA CHO TASK MỚI ---
             if task == 0:
-                # Task đầu tiên: Chỉ cập nhật nhãn
-                self._update_label_info()
+                 # update labels info. for the first task
+                available_labels = set()
+                available_labels_current = set()
+                available_labels_past = set()
+                for u in self.clients:
+                    available_labels = available_labels.union(set(u.classes_so_far))
+                    available_labels_current = available_labels_current.union(set(u.current_labels))
+                for u in self.clients:
+                    u.available_labels = list(available_labels)
+                    u.available_labels_current = list(available_labels_current)
+                    u.available_labels_past = list(available_labels_past)
+
             else:
-                # Các Task sau: Load dữ liệu mới cho từng client
-                self._load_task_data_for_clients(task)
-                self._update_label_info()
+                self.current_task = task
+                
+                torch.cuda.empty_cache()
+                for i in range(len(self.clients)):
+                    
+                    if self.args.dataset == 'IMAGENET1k':
+                        train_data, label_info = read_client_data_FCL_imagenet1k(i, task=task,
+                                                                                 classes_per_task=self.args.cpt,
+                                                                                 count_labels=True)
+                    elif self.args.dataset == 'CIFAR100':
+                        train_data, label_info = read_client_data_FCL_cifar100(i, task=task,
+                                                                               classes_per_task=self.args.cpt,
+                                                                               count_labels=True)
+                    elif self.args.dataset == 'CIFAR10':
+                        train_data, label_info = read_client_data_FCL_cifar10(i, task=task,
+                                                                              classes_per_task=self.args.cpt,
+                                                                              count_labels=True)
+                    else:
+                        raise NotImplementedError("Not supported dataset")
 
-            # --- 2. VÒNG LẶP COMMUNICATION ROUNDS ---
+                    # update dataset
+                    self.clients[i].next_task(train_data, label_info) # assign dataloader for new data
+                    # print(self.clients[i].task_dict)
+
+                # update labels info.
+                available_labels = set()
+                available_labels_current = set()
+                available_labels_past = self.clients[0].available_labels
+                for u in self.clients:
+                    available_labels = available_labels.union(set(u.classes_so_far))
+                    available_labels_current = available_labels_current.union(set(u.current_labels))
+
+                for u in self.clients:
+                    u.available_labels = list(available_labels)
+                    u.available_labels_current = list(available_labels_current)
+                    u.available_labels_past = list(available_labels_past)
+
+            # ============ train ==============
+
             for i in range(self.global_rounds):
-                
-                s_t = time.time()
-                glob_iter = i + self.global_rounds * task
-                
-                # a. Chọn Clients và Gửi Model
-                self.selected_clients = self.select_clients()
-                self.send_models() 
 
-                # b. Log Global Accuracy (Trước khi train)
-                if i % self.eval_gap == 0:
+                glob_iter = i + self.global_rounds * task
+                s_t = time.time()
+                self.selected_clients = self.select_clients()
+                self.send_models()
+
+                if i%self.eval_gap == 0:
                     print(f"\n-------------Round number: {i}-------------")
                     self.eval(task=task, glob_iter=glob_iter, flag="global")
 
-                # c. Client Local Training
                 for client in self.selected_clients:
                     client.train(task=task)
 
-                # d. Log Local Accuracy (Sau khi train)
-                if i % self.eval_gap == 0:
+                # threads = [Thread(target=client.train)
+                #            for client in self.selected_clients]
+                # [t.start() for t in threads]
+                # [t.join() for t in threads]
+
+                self.receive_models()
+                self.receive_grads()
+                model_origin = copy.deepcopy(self.global_model)
+                self.aggregate_parameters()
+
+                if self.args.seval:
+                    self.spatio_grad_eval(model_origin=model_origin)
+
+                if self.args.pca_eval:
+                    self.proto_eval(global_model=self.global_model,
+                                    local_model=self.uploaded_models[0], task=task, round=i)
+
+                if i%self.eval_gap == 0:
                     self.eval(task=task, glob_iter=glob_iter, flag="local")
 
-                # e. Aggregation (FedAvg)
-                self.receive_models() 
-                self.aggregate_parameters()
-                
-                
+                self.Budget.append(time.time() - s_t)
+                print('-'*25, 'time cost', '-'*25, self.Budget[-1])
 
-            # --- 3. ĐÁNH GIÁ CUỐI TASK (FORGETTING RATE) ---
-            if self.args.offlog:
-                print(f"\n>>> Task {task} Finished. Evaluating Forgetting Rate...")
-                # Gửi model mới nhất xuống client để test
-                self.send_models() 
-                # Hàm eval_task trong ServerBase sẽ tính toán và log Forgetting
-                self.eval_task(task=task, glob_iter=glob_iter, flag="global")
+            if int(task/self.N_TASKS) == int(self.args.num_tasks/self.N_TASKS-1):
+                if self.args.offlog == True and not self.args.debug:  
+                    self.eval_task(task=task, glob_iter=glob_iter, flag="local")
 
-            self.change_task(task, (task + 1)*self.global_rounds)
-
-    def _update_label_info(self):
-        """Cập nhật danh sách nhãn hiện có trong hệ thống"""
-        available_labels = set()
-        for u in self.clients:
-            available_labels = available_labels.union(set(u.classes_so_far))
-        self.available_labels_current = available_labels
-
-    def _load_task_data_for_clients(self, task):
-        """Helper để load dữ liệu task mới cho từng client"""
-        # Chọn hàm đọc dữ liệu dựa trên config
-        if 'IMAGENET1k' in self.args.dataset:
-            read_func = read_client_data_FCL_imagenet1k
-        elif 'CIFAR100' in self.args.dataset:
-            read_func = read_client_data_FCL_cifar100
-        else:
-            read_func = read_client_data_FCL_cifar10
-
-        for i, client in enumerate(self.clients):
-            train_data, label_info = read_func(
-                i, task=task, classes_per_task=self.args.cpt, count_labels=True
-            )
-            # Gọi hàm next_task của client để cập nhật dữ liệu
-            client.next_task(train_data, label_info)
+                    # need eval before data update
+                    self.send_models()
+                    self.eval_task(task=task, glob_iter=glob_iter, flag="global")

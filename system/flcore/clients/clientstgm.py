@@ -169,8 +169,8 @@ class clientSTGM(Client):
         else:
             pass
 
-        if self.args.teval:
-            self.grad_eval(old_model=self.model)
+        # if self.args.teval:
+        #     self.grad_eval(old_model=self.model)
 
         if self.learning_rate_decay:
             self.learning_rate_scheduler.step()

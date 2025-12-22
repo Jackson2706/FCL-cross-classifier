@@ -57,16 +57,15 @@ class Server(object):
         self.global_accuracy_matrix = []
         self.local_accuracy_matrix = []
 
-        # if self.args.dataset == 'IMAGENET1k':
-        #     self.N_TASKS = 500
-        # elif self.args.dataset == 'CIFAR100':
-        #     self.N_TASKS = 50
-        # elif self.args.dataset == 'CIFAR10':
-        #     self.N_TASKS = 5
-        # if self.args.nt is not None:
-        #     self.N_TASKS = self.args.num_classes // self.args.cpt
-        self.N_TASKS = self.args.num_tasks
-        assert self.args.num_classes // self.args.cpt == self.N_TASKS 
+        if self.args.dataset == 'IMAGENET1k':
+            self.N_TASKS = 500
+        elif self.args.dataset == 'CIFAR100':
+            self.N_TASKS = 50
+        elif self.args.dataset == 'CIFAR10':
+            self.N_TASKS = 5
+        if self.args.nt is not None:
+            self.N_TASKS = self.args.num_classes // self.args.cpt
+
         # FCL
         self.task_dict = {}
         self.current_task = 0
@@ -77,22 +76,6 @@ class Server(object):
         self.norm_value = 0
 
         self.file_name = f"{self.args.algorithm}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
-
-
-        # Theo dõi bước hiện tại trong lộ trình (curriculum step)
-        self.current_curriculum_step = 0
-
-        # Chia 100 class thành 5 cụm cố định
-        all_classes = list(range(self.num_classes))
-        # random.shuffle(all_classes) # Bỏ comment nếu muốn task 0 không nhất thiết là class 0-19
-        self.global_task_labels = {}
-        for t in range(self.N_TASKS):
-            self.global_task_labels[t] = all_classes[t*self.args.cpt : (t+1)*self.args.cpt]
-
-        # FCL Metric Histories
-        self.kr_t_history = []
-        self.kr_s_history = []
-        self.global_accuracy_matrix = []
 
     def set_clients(self, clientObj):
         for i in range(self.num_clients):
@@ -114,7 +97,6 @@ class Server(object):
             client.current_labels.extend(label_info['labels'])
             client.task_dict[0] = label_info['labels']
             client.file_name = self.file_name
-        self.print_task_curriculum()
 
     def select_clients(self):
         if self.random_join_ratio:
@@ -139,13 +121,8 @@ class Server(object):
     def receive_models(self):
         assert (len(self.selected_clients) > 0)
 
-        active_clients = sorted(
-            random.sample(
-                self.selected_clients, 
-                int((1 - self.client_drop_rate) * self.current_num_join_clients)
-            ), 
-            key=lambda client: client.id
-        )
+        active_clients = random.sample(
+            self.selected_clients, int((1-self.client_drop_rate) * self.current_num_join_clients))
 
         self.uploaded_ids = []
         self.uploaded_weights = []
@@ -410,144 +387,3 @@ class Server(object):
         # Save model state_dict
         model_path = os.path.join(save_dir, model_filename)
         torch.save(local_model.state_dict(), model_path)
-
-    def print_task_curriculum(self):
-        print("\n" + "="*60)
-        print(f"TASK CURRICULUM REPORT (Total Clients: {len(self.clients)})")
-        print("="*60)
-
-        for client in self.clients:
-            print(f"Client ID: {client.id}")
-            
-            # Check if the dictionary is empty
-            if not client.task_dict:
-                print("   [No tasks assigned yet]")
-                continue
-
-            # Sort task IDs to print in order (Task 0, Task 1...)
-            sorted_task_ids = sorted(client.task_dict.keys())
-            
-            for t_id in sorted_task_ids:
-                labels = client.task_dict[t_id]
-                
-                # Handle different data types (Tensor, Numpy, List)
-                if hasattr(labels, 'tolist'):
-                    labels = labels.tolist()
-                elif isinstance(labels, list):
-                    pass # It's already a list
-                else:
-                    # If it's a single number or unexpected type
-                    labels = list(labels)
-
-                # Sort labels for easier visual comparison
-                labels = sorted(labels)
-                
-                print(f"   Task {t_id:<2} | Count: {len(labels):<2} | Labels: {labels}")
-            
-            print("-" * 30)
-        print("="*60 + "\n")
-
-    def compute_knowledge_retention(self, current_task, round=None):
-        """
-        Computes accuracy on all tasks seen so far (0 to current_task) 
-        and logs the results to WandB.
-        """
-        task_accuracies = []
-        wandb_logs = {}
-
-        print(f"\n--- Computing Knowledge Retention (Tasks 0 to {current_task}) ---")
-
-        # 1. Iterate through all previous tasks up to the current one
-        for task_id in range(current_task + 1):
-            total_correct = 0
-            total_samples = 0
-
-            # 2. Collect metrics from all clients
-            for client in self.clients:
-                # OPTIONAL: Sync global model if evaluating global performance
-                # client.set_parameters(self.global_model) 
-
-                correct, num_samples = client.test_metrics(task=task_id)
-                total_correct += correct
-                total_samples += num_samples
-
-            # 3. Calculate accuracy
-            if total_samples > 0:
-                task_acc = total_correct / total_samples
-            else:
-                task_acc = 0.0
-            
-            task_accuracies.append(task_acc)
-            
-            # Prepare individual task log
-            wandb_logs[f"Retention/Task_{task_id}_Acc"] = task_acc
-            print(f"   Task {task_id} Accuracy: {task_acc:.4f}")
-
-        # 4. Calculate Average Retention
-        avg_retention = sum(task_accuracies) / len(task_accuracies) if task_accuracies else 0.0
-        wandb_logs[f"Retention/Average_Acc"] = avg_retention
-        
-        # 5. Add 'round' or 'task' to x-axis context if provided
-        if round is not None:
-            wandb_logs['Round'] = round
-        wandb_logs['Current_Task'] = current_task
-
-        # 6. Upload to WandB
-        if wandb.run is not None:
-            wandb.log(wandb_logs)
-        
-        print(f"   [Summary] Average Retention: {avg_retention:.4f}")
-        print("------------------------------------------------------------\n")
-
-        return avg_retention, task_accuracies
-
-    def calculate_table1_accuracy(self, current_step, glob_iter):
-        task_accs = {}
-        for t_id in range(self.N_TASKS):
-            t_corr, t_samp = 0, 0
-            for c in self.clients:
-                # Evaluation of Global Model on specific Task ID
-                ct, ns = c.test_metrics(task=t_id)
-                t_corr += ct
-                t_samp += ns
-            
-            acc = (t_corr / t_samp) * 100 if t_samp > 0 else 0
-            task_accs[f"Table1/TaskID_{t_id}"] = acc
-        
-        if self.args.wandb:
-            wandb.log(task_accs, step=glob_iter)
-
-    def visualize_tsne(self, step_idx, glob_iter):
-        from sklearn.manifold import TSNE
-        import matplotlib.pyplot as plt
-
-        all_feats, all_labels = [], []
-        for client in self.clients[:3]: # Lấy mẫu từ 3 client đại diện
-            feats, labels = client.get_feature_embeddings(self.global_model)
-            all_feats.append(feats)
-            all_labels.append(labels)
-        
-        feats_np = torch.cat(all_feats).cpu().numpy()
-        labels_np = torch.cat(all_labels).cpu().numpy()
-
-        tsne = TSNE(n_components=2, random_state=42)
-        embeds = tsne.fit_transform(feats_np)
-
-        plt.figure(figsize=(10, 8))
-        scatter = plt.scatter(embeds[:, 0], embeds[:, 1], c=labels_np, cmap='tab10', s=10)
-        plt.colorbar(scatter)
-        plt.title(f"t-SNE After Task {step_idx+1}")
-        
-        if self.args.wandb:
-            wandb.log({f"Visual/tSNE_Task_{step_idx+1}": wandb.Image(plt)}, step=glob_iter)
-        plt.close()
-
-    def change_task(self, step, glob_iter):
-        # Chỉ số 1: Table 1 - Accuracy Matrix (Global Model trên từng Task ID)
-        self.calculate_table1_accuracy(step, glob_iter)
-        
-        # Chỉ số 2 & 3: Temporal và Spatial Knowledge Retention
-        self.compute_knowledge_retention(glob_iter)
-        
-        # Chỉ số 4: Trực quan hóa t-SNE
-        self.visualize_tsne(step, glob_iter)

@@ -22,7 +22,7 @@ for img, label in testset:
     cifar100_classes[label].append(img.numpy())
 
 # Create output folder
-output_folder = "dataset/cifar100-classes"
+output_folder = "cifar100-classes"
 os.makedirs(output_folder, exist_ok=True)
 
 # Save each class as a .npy file

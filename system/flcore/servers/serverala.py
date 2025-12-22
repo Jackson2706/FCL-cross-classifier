@@ -21,8 +21,8 @@ class FedALA(Server):
 
     def train(self):
 
-        # if self.args.num_tasks % self.N_TASKS != 0:
-        #     raise ValueError("Set num_task again")
+        if self.args.num_tasks % self.N_TASKS != 0:
+            raise ValueError("Set num_task again")
 
         for task in range(self.args.num_tasks):
 
@@ -100,24 +100,24 @@ class FedALA(Server):
                 self.aggregate_parameters()
 
                 if self.args.seval:
-                    self.spatio_grad_eval(model_origin=model_origin, glob_iter=glob_iter)
+                    self.spatio_grad_eval(model_origin=model_origin)
 
                 if self.args.pca_eval:
                     self.proto_eval(model=self.global_model, task=task, round=i)
 
-                # if i%self.eval_gap == 0:
-                #     self.eval(task=task, glob_iter=glob_iter, flag="local")
+                if i%self.eval_gap == 0:
+                    self.eval(task=task, glob_iter=glob_iter, flag="local")
 
                 self.Budget.append(time.time() - s_t)
                 print('-'*25, 'time cost', '-'*25, self.Budget[-1])
 
-            # if int(task/self.N_TASKS) == int(self.args.num_tasks/self.N_TASKS-1):
-            #     if self.args.offlog == True and not self.args.debug:  
-            #         self.eval_task(task=task, glob_iter=glob_iter, flag="local")
+            if int(task/self.N_TASKS) == int(self.args.num_tasks/self.N_TASKS-1):
+                if self.args.offlog == True and not self.args.debug:  
+                    self.eval_task(task=task, glob_iter=glob_iter, flag="local")
 
-            #         # need eval before data update
-            #         self.send_models()
-            #         self.eval_task(task=task, glob_iter=glob_iter, flag="global")
+                    # need eval before data update
+                    self.send_models()
+                    self.eval_task(task=task, glob_iter=glob_iter, flag="global")
 
 
     def send_models(self):

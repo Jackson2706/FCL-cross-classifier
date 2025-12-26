@@ -30,13 +30,7 @@ class clientOursV2(Client):
         self.T = getattr(args, 'T', 2.0) 
 
         # --- Initialize Generator ---
-        self.generator = Generator(
-            nz=self.nz, ngf=64, img_size=self.img_size, nc=self.nc, 
-            num_classes=args.num_classes, device=self.device
-        ).to(self.device)
-        self.freeze_generator()
-
-        self.old_network = None # Teacher model
+        self.generator = None
 
     def freeze_generator(self):
         self.generator.eval()
@@ -44,17 +38,16 @@ class clientOursV2(Client):
             param.requires_grad = False
 
     def set_generator_parameters(self, global_generator):
-        self.generator.load_state_dict(global_generator.state_dict())
+        """
+        Nhận Generator mới nhất từ Server
+        """
+        if self.generator:
+            self.generator.load_state_dict(global_generator.state_dict())
+        else:
+            self.generator = global_generator
         self.freeze_generator()
+        self.generator.to(self.device)
 
-    def next_task(self, train, label_info=None, if_label=True):
-        """Snapshot the current model as the Teacher before moving to the next task"""
-        super().next_task(train, label_info, if_label)
-        
-        self.old_network = copy.deepcopy(self.model)
-        self.old_network.eval()
-        for param in self.old_network.parameters():
-            param.requires_grad = False
 
     def get_feature_embeddings(self, model=None, task_id=None, num_samples=None):
         """Extracts feature embeddings for t-SNE visualization."""
@@ -93,76 +86,129 @@ class clientOursV2(Client):
 
     def train(self, task=None):
         trainloader = self.load_train_data(task=task)
+        self.class_sample_count = self._count_samples_per_class(trainloader.dataset)
+        self.real_classes = set(self.class_sample_count.keys())
+        print(f"[Client {self.id}] Real classes in task {task}: {self.real_classes}")
+        if self.generator:
+            self.generator.eval()
+            print(f"[Client {self.id}] Generator available for classes: {self.get_generator_classes()}")
+            trainloader = self.create_augmented_dataset(trainloader.dataset)
         
         # Ensure model is trainable
         for param in self.model.parameters(): param.requires_grad = True
         self.model.train()
-        self.generator.eval()
         
         start_time = time.time()
         local_loss = []
         
         for epoch in range(self.local_epochs):
-            for i, (x_real, y_real) in enumerate(trainloader):
+            for i, (x, y) in enumerate(trainloader):
                 self.optimizer.zero_grad()
-                if isinstance(x_real, list): x_real = x_real[0]
-                x_real = x_real.to(self.device)
-                y_real = y_real.to(self.device)
+                if isinstance(x, list): x = x[0]
+                x = x.to(self.device)
+                y = y.to(self.device)
+                output = self.model(x)
+                loss = self.loss(output, y)
 
-                # --- 1. Real Data Loss ---
-                output_real = self.model(x_real)
-                loss_real = self.loss(output_real, y_real)
-
-                # --- 2. Replay Data Loss (KD) ---
-                loss_replay = torch.tensor(0.0).to(self.device)
-                
-                if self.old_network is not None and len(self.classes_past_task) > 0:
-                    batch_size = x_real.shape[0]
-                    
-                    z = torch.randn(batch_size, self.nz).to(self.device)
-                    fake_labels_np = np.random.choice(self.classes_past_task, batch_size)
-                    fake_labels = torch.tensor(fake_labels_np).long().to(self.device)
-                    
-                    with torch.no_grad():
-                        syn_inputs = self.generator(z, fake_labels)
-                        syn_inputs = (syn_inputs + 1) / 2.0
-                        syn_inputs = self.batch_normalize(syn_inputs, mean=self.mean, std=self.std)
-                        # Teacher Soft Targets
-                        teacher_logits = self.old_network(syn_inputs)
-
-                    # Student Predictions
-                    student_logits = self.model(syn_inputs.detach())
-
-                    # TODO Design a replay-based loss
-                    # KL Divergence
-                    log_pred_student = F.log_softmax(student_logits / self.T, dim=1)
-                    pred_teacher = F.softmax(teacher_logits / self.T, dim=1)
-                    kd_loss = F.kl_div(log_pred_student, pred_teacher, reduction='batchmean') * (self.T ** 2)
-                    
-                    loss_replay = self.replay_weight * kd_loss
-
-                # --- 3. Total Loss ---
-                total_loss = loss_real + loss_replay
-                local_loss.append(total_loss.item())
-                total_loss.backward()
+               
+                local_loss.append(loss.item())
+                loss.backward()
                 self.optimizer.step()
             
-            # if self.learning_rate_scheduler:
-            #     self.learning_rate_scheduler.step()
+            if self.learning_rate_scheduler:
+                self.learning_rate_scheduler.step()
                 
         # Logging
         current_lr = self.optimizer.param_groups[0]['lr']
-        print(f"[Client {self.id}] Task {task} | Loss: {sum(local_loss)/len(local_loss):.4f} "
-              f"(CE: {loss_real.item():.4f}, KD: {loss_replay.item():.4f}) | LR: {current_lr:.6f}")
+        print(f"[Client {self.id}] Task {task} | Loss: {sum(local_loss)/len(local_loss):.4f} | LR: {current_lr:.6f}")
         
         self.train_time_cost['num_rounds'] += 1
         self.train_time_cost['total_cost'] += time.time() - start_time
 
-    def batch_normalize(self, batch_tensor, mean, std):
-        """
-        Normalizes a batch of tensors (N, C, H, W) using dataset mean/std.
-        """
-        # Create tensors for mean and std and reshape for broadcasting
-        mean_t = torch.tensor(mean, device=batch_tensor.device).view(1, -1, 1, 1)
-        std_t = torch.tensor(std, device=batch_tensor.device).view(1, -1, 1, 1)
-        return (batch_tensor - mean_t) / std_t
+    
+    def _count_samples_per_class(self, dataset):
+        """Count number of samples per class in training data"""
+        class_counts = {}
+        for _, label in dataset:
+            label = int(label)
+            class_counts[label] = class_counts.get(label, 0) + 1
+        return class_counts
+        
+    def get_generator_classes(self):
+        """Get classes that generator can generate"""
+        # Assuming generator has num_classes attribute or infer from output layer
+        if hasattr(self.generator, 'num_classes'):
+            return set(range(self.generator.num_classes))
+        return set(range(10))  # Default fallback
+        
+    def create_augmented_dataset(self, train_data):
+        """Create dataset with real data + generated data for missing classes"""
+        generator_classes = self.get_generator_classes()
+        missing_classes = generator_classes - self.real_classes
+        
+        # Store for use in training
+        self.real_classes = self.real_classes
+        self.missing_classes = missing_classes
+        self.all_classes = self.real_classes | missing_classes
+
+        # --- [FIX START] Analyze Real Data Structure ---
+        # We check the first sample to see if labels are Tensors or Ints
+        # and if there are extra return values (like sample indices).
+        if len(train_data) > 0:
+            sample_real = train_data[0] # Get first sample
+            # Check if label (index 1) is a Tensor
+            is_label_tensor = isinstance(sample_real[1], torch.Tensor)
+            # Check tuple length (e.g., if data returns (img, label, index))
+            data_tuple_len = len(sample_real)
+        else:
+            # Default fallback
+            is_label_tensor = True
+            data_tuple_len = 2
+        # --- [FIX END] ---
+
+        # Generate synthetic samples for missing classes
+        synthetic_data = []
+        synthetic_labels = []
+
+        if missing_classes:
+            for class_id in missing_classes:
+                num_samples = max(self.class_sample_count.values()) if self.class_sample_count else 100
+                z = torch.randn(num_samples, self.nz).to(self.device)
+                class_labels = torch.full((num_samples,), class_id, dtype=torch.long).to(self.device)
+                
+                with torch.no_grad():
+                    synthetic_samples = self.generator(z, class_labels)
+                
+                synthetic_data.append(synthetic_samples.cpu())
+                synthetic_labels.extend([class_id] * num_samples)
+
+        # Combine real and synthetic data
+        combined_data = list(train_data)
+        
+        if synthetic_data:
+            synthetic_data_tensor = torch.cat(synthetic_data, dim=0)
+            
+            # --- [FIX START] Append Synthetic Data with Correct Format ---
+            for i, (img, label_int) in enumerate(zip(synthetic_data_tensor, synthetic_labels)):
+                
+                # 1. Match Label Type
+                if is_label_tensor:
+                    label = torch.tensor(label_int, dtype=torch.long)
+                else:
+                    label = label_int
+                
+                # 2. Match Tuple Structure
+                if data_tuple_len == 2:
+                    combined_data.append((img, label))
+                elif data_tuple_len == 3:
+                    # If real data returns (img, label, index), we need a dummy index
+                    dummy_idx = -1 
+                    combined_data.append((img, label, dummy_idx))
+                else:
+                    # Generic fallback for other tuple lengths
+                    combined_data.append((img, label) + (0,) * (data_tuple_len - 2))
+            # --- [FIX END] ---
+
+        # Create DataLoader
+        from torch.utils.data import DataLoader # Ensure this is imported
+        return DataLoader(combined_data, batch_size=self.batch_size, shuffle=True)

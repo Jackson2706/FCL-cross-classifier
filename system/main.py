@@ -23,6 +23,7 @@ from flcore.servers.serverl2p import FedL2P
 from flcore.servers.serverssi import FedSSI
 from flcore.servers.serverrefedplus import ReFedPlus
 from flcore.servers.ours_v2 import OursV2
+from flcore.servers.ours import Ours
 from flcore.trainmodel.models import *
 
 from flcore.trainmodel.AFFCL_models import AFFCLModel
@@ -163,6 +164,11 @@ def run(args):
             args.model.fc = nn.Identity()
             args.model = BaseHeadSplit(args.model, args.head)
             server = FedL2P(args, i)
+        elif args.algorithm == "Ours":
+            args.head = copy.deepcopy(args.model.fc)
+            args.model.fc = nn.Identity()
+            args.model = BaseHeadSplit(args.model, args.head)
+            server = Ours(args, i)
         elif args.algorithm == "Ours_v2":
             args.head = copy.deepcopy(args.model.fc)
             args.model.fc = nn.Identity()

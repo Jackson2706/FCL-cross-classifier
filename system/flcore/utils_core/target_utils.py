@@ -257,79 +257,41 @@ class ImagePool(object):
 
 
 class Generator(nn.Module):
-    def __init__(self, nz=100, ngf=64, img_size=32, nc=3, num_classes=100, device=None):
+    def __init__(self, nz=100, ngf=64, img_size=32, nc=3, device=None):
         super(Generator, self).__init__()
+        self.params = (nz, ngf, img_size, nc)
+        self.init_size = img_size // 4
+        self.l1 = nn.Sequential(nn.Linear(nz, ngf * 2 * self.init_size ** 2))
         self.device = device
-        self.params = (nz, ngf, img_size, nc, num_classes)
-        self.nz = nz
-        self.ngf = ngf
-        self.nc = nc
-        self.init_size = img_size // 4  # 32 // 4 = 8
-        
-        # --- 1. Label Embedding ---
-        # Embed the label into a vector of size 'nz' to combine with noise
-        self.label_emb = nn.Embedding(num_classes, nz)
-        
-        # --- 2. Linear Layer ---
-        # Input size is nz * 2 (noise + label embedding)
-        # Output size creates feature maps of shape (ngf*2, init_size, init_size)
-        self.l1 = nn.Sequential(
-            nn.Linear(nz * 2, ngf * 2 * self.init_size ** 2)
-        )
 
-        # --- 3. Convolutional Blocks ---
         self.conv_blocks = nn.Sequential(
             nn.BatchNorm2d(ngf * 2),
-            nn.Upsample(scale_factor=2),  # 8x8 -> 16x16
+            nn.Upsample(scale_factor=2),
 
-            nn.Conv2d(ngf * 2, ngf * 2, 3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(ngf * 2),
+            nn.Conv2d(ngf*2, ngf*2, 3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(ngf*2),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Upsample(scale_factor=2),  # 16x16 -> 32x32
+            nn.Upsample(scale_factor=2),
 
-            nn.Conv2d(ngf * 2, ngf, 3, stride=1, padding=1, bias=False),
+            nn.Conv2d(ngf*2, ngf, 3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(ngf),
             nn.LeakyReLU(0.2, inplace=True),
-            
             nn.Conv2d(ngf, nc, 3, stride=1, padding=1),
-            nn.Tanh(),  # Use Tanh for [-1, 1] range or Sigmoid for [0, 1]
+            nn.Sigmoid(),  
         )
 
-    def forward(self, z, labels):
-        """
-        Args:
-            z: Noise vector of shape (batch_size, nz)
-            labels: Class labels of shape (batch_size,)
-        
-        Returns:
-            Generated images of shape (batch_size, nc, img_size, img_size)
-        """
-        # 1. Get the label embedding
-        label_emb = self.label_emb(labels)  # Shape: (batch_size, nz)
-        
-        # 2. Concatenate noise and label embedding
-        gen_input = torch.cat((z, label_emb), dim=-1)  # Shape: (batch_size, nz*2)
-        
-        # 3. Linear projection
-        out = self.l1(gen_input)  # Shape: (batch_size, ngf*2*init_size**2)
-        
-        # 4. Reshape to feature maps - EXPLICIT channel dimension
-        out = out.view(out.shape[0], self.ngf * 2, self.init_size, self.init_size)
-        # Shape: (batch_size, ngf*2, init_size, init_size)
-        
-        # 5. Generate image through conv blocks
-        img = self.conv_blocks(out)  # Shape: (batch_size, nc, img_size, img_size)
-        
+    def forward(self, z):
+        out = self.l1(z)
+        out = out.view(out.shape[0], -1, self.init_size, self.init_size)
+        img = self.conv_blocks(out)
         return img
 
+    # return a copy of its own
     def clone(self):
-        """
-        Create a deep copy of the generator on the same device.
-        """
-        current_device = next(self.parameters()).device
-        clone = Generator(*self.params, device=current_device)
+        clone = Generator(self.params[0], self.params[1], self.params[2], self.params[3])
         clone.load_state_dict(self.state_dict())
-        return clone
+        return clone.to(self.device)
+
 
 def kldiv( logits, targets, T=1.0, reduction='batchmean'):
     q = F.log_softmax(logits/T, dim=1)
@@ -564,18 +526,3 @@ def refine_as_not_true(logits, targets, num_classes):
     logits = torch.gather(logits, 1, nt_positions)
 
     return logits
-
-from collections import Counter
-
-def get_class_counts(dataloader):
-    # Khởi tạo bộ đếm
-    counts = Counter()
-    
-    # Duyệt qua từng batch trong dataloader
-    for x, y in dataloader:
-        # 'y' là một Tensor chứa nhãn của batch (ví dụ: tensor([1, 0, 1, 2]))
-        # .tolist() chuyển nó về dạng list Python (ví dụ: [1, 0, 1, 2]) để Counter đếm được
-        counts.update(y.tolist())
-        
-    # Trả về kết quả (sắp xếp theo key để dễ nhìn)
-    return dict(sorted(counts.items()))

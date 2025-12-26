@@ -1,54 +1,35 @@
 import time
 import torch
 import copy
-import os
-import shutil
-import numpy as np
-from torch import nn, optim
-from torchvision.utils import save_image
 from flcore.clients.clienttarget import clientTARGET
 from flcore.servers.serverbase import Server
-# Ensure this import points to your new Conditional Generator file
-# from models.generator import Generator 
 from flcore.utils_core.target_utils import *
-from utils.data_utils import *
+from utils.data_utils import read_client_data_FCL_cifar100, read_client_data_FCL_imagenet1k
+from utils.model_utils import ParamDict
+from torch.nn.utils import vector_to_parameters, parameters_to_vector
+
+from torch.optim.lr_scheduler import StepLR
+import numpy as np
+
+import statistics
+
+from torch import nn
+from torch.nn import functional as F
+import torch.utils
+from torch.utils.data import DataLoader
+import torch.utils.data
+from typing import List
+from torch.func import functional_call
 from copy import deepcopy
 
-# --- Helper Functions for Generator Training ---
-class BNFeatureHook:
-    def __init__(self, module):
-        self.hook = module.register_forward_hook(self.hook_fn)
-        self.r_feature = None 
-
-    def hook_fn(self, module, input, output):
-        self.r_feature = input[0]
-
-    def remove(self):
-        self.hook.remove()
-
-def get_bn_loss(teacher_model, gen_imgs):
-    """Calculates BN statistics distance between real (stored in teacher) and fake data."""
-    bn_hooks = []
-    bn_layers = [m for m in teacher_model.modules() if isinstance(m, nn.BatchNorm2d)]
-
-    for module in bn_layers:
-        bn_hooks.append(BNFeatureHook(module))
-
-    teacher_model(gen_imgs)
-
-    loss_bn = 0.0
-    for hook, layer in zip(bn_hooks, bn_layers):
-        real_mean = layer.running_mean
-        real_var = layer.running_var
-        gen_feat = hook.r_feature
-        gen_mean = torch.mean(gen_feat, dim=[0, 2, 3])
-        gen_var = torch.var(gen_feat, dim=[0, 2, 3], unbiased=False)
-        loss_bn += torch.norm(gen_mean - real_mean, 2) + torch.norm(gen_var - real_var, 2)
-
-    for hook in bn_hooks: hook.remove()
-    return loss_bn
-
-# ------------------------------------------------
+from tqdm import tqdm
+from torchvision import transforms
+import time, os, math
+import torch.nn.init as init
+from PIL import Image
+from torch.autograd import Variable
+from abc import ABC
+import shutil
 
 class FedTARGET(Server):
     def __init__(self, args, times):
@@ -56,190 +37,226 @@ class FedTARGET(Server):
         self.synthtic_save_dir = "dataset/synthetic_data"
         if os.path.exists(self.synthtic_save_dir):
             shutil.rmtree(self.synthtic_save_dir)
-        
-        self.nums = 8000 # Number of images to generate per task
-        self.available_labels_current = []
-        
-        # --- Config Generator ---
-        # Heuristic for image size
-        if 'cifar' in self.dataset.lower():
-            self.img_size = 32; self.nz = 256
-        elif 'imagenet' in self.dataset.lower():
-            self.img_size = 64 if '100' in self.dataset else 224; self.nz = 256
-        else:
-            self.img_size = 32; self.nz = 100
-
-        # Initialize CONDITIONAL Generator
-        self.global_generator = Generator(
-            nz=self.nz, ngf=64, img_size=self.img_size, nc=3, 
-            num_classes=args.num_classes, device=self.device
-        ).to(self.device)
+        self.nums = 8000
+        self.total_classes = []
+        self.syn_data_loader = None
+        self.old_network = None
+        self.kd_alpha = 25
+        if "CIFAR100" in self.dataset:
+            self.dataset_size = 50000
+        elif "IMAGENET1k" in self.dataset:
+            self.dataset_size = 1281167
+        self.available_labels_current = None
 
         self.set_clients(clientTARGET)
+
         print(f"\nJoin ratio / total clients: {self.join_ratio} / {self.num_clients}")
         print("Finished creating server and clients.")
+
+        # self.load_model()
         self.Budget = []
 
     def train(self):
+
+        if self.args.num_tasks % self.N_TASKS != 0:
+            raise ValueError("Set num_task again")
+
         for task in range(self.args.num_tasks):
+
             print(f"\n================ Current Task: {task} =================")
-            
-            # --- 1. Label Collection ---
             if task == 0:
+                 # update labels info. for the first task
                 available_labels = set()
                 available_labels_current = set()
+                available_labels_past = set()
                 for u in self.clients:
-                    available_labels.update(u.classes_so_far)
-                    available_labels_current.update(u.current_labels)
+                    available_labels = available_labels.union(set(u.classes_so_far))
+                    available_labels_current = available_labels_current.union(set(u.current_labels))
+                self.available_labels_current = available_labels_current
                 
-                self.available_labels_current = list(available_labels_current)
                 for u in self.clients:
                     u.available_labels = list(available_labels)
                     u.available_labels_current = list(available_labels_current)
+                    u.available_labels_past = list(available_labels_past)
+
             else:
                 self.current_task = task
+                
                 torch.cuda.empty_cache()
 
-                # Freeze old network for distillation
                 self.old_network = deepcopy(self.global_model)
-                for p in self.old_network.parameters(): p.requires_grad = False
+                for p in self.old_network.parameters():
+                    p.requires_grad = False
 
-                # Update Clients
                 for i in range(len(self.clients)):
-                    if self.args.dataset == 'IMAGENET1k':
-                        read_func = read_client_data_FCL_imagenet1k
-                    elif 'cifar100' in self.args.dataset.lower():
-                        read_func = read_client_data_FCL_cifar100
-                    else:
-                        raise NotImplementedError("Dataset not supported")
-
-                    train_data, label_info = read_func(i, task=task, classes_per_task=self.args.cpt, count_labels=True)
-                    self.clients[i].next_task(train_data, label_info)
                     
-                    # Store client's old model
-                    self.clients[i].old_network = deepcopy(self.clients[i].model)
-                    for p in self.clients[i].old_network.parameters(): p.requires_grad = False
+                    if self.args.dataset == 'IMAGENET1k':
+                        train_data, label_info = read_client_data_FCL_imagenet1k(i, task=task, classes_per_task=self.args.cpt, count_labels=True)
+                    elif self.args.dataset == 'CIFAR100':
+                        train_data, label_info = read_client_data_FCL_cifar100(i, task=task, classes_per_task=self.args.cpt, count_labels=True)
+                    else:
+                        raise NotImplementedError("Not supported dataset")
 
-                # Recalculate Labels
+                    # update dataset
+                    self.clients[i].next_task(train_data, label_info)
+                    self.clients[i].old_network = deepcopy(self.clients[i].model)
+                    for p in self.clients[i].old_network.parameters():
+                        p.requires_grad = False
+                    
+                # update labels info.
                 available_labels = set()
                 available_labels_current = set()
+                available_labels_past = self.clients[0].available_labels
                 for u in self.clients:
-                    available_labels.update(u.classes_so_far)
-                    available_labels_current.update(u.current_labels)
-                
-                self.available_labels_current = list(available_labels_current)
+                    available_labels = available_labels.union(set(u.classes_so_far))
+                    available_labels_current = available_labels_current.union(set(u.current_labels))
+                self.available_labels_current = available_labels_current
+
                 for u in self.clients:
                     u.available_labels = list(available_labels)
                     u.available_labels_current = list(available_labels_current)
+                    u.available_labels_past = list(available_labels_past)
 
-            # --- 2. Training Loop ---
+            # ============ train ==============
+
             for i in range(self.global_rounds):
-                # Prepare clients for synthetic data usage (from previous task)
-                if task > 0:
+                
+                if task > 0 :
                     for u in self.clients:
+                        u.old_network = deepcopy(self.old_network)
                         u.syn_data_loader = u.get_syn_data_loader()
-                        # u.it = iter(u.syn_data_loader) # Often safer to use iter() directly in loop
+                        u.it = DataIter(u.syn_data_loader)
+                        u.old_network = u.old_network.to(self.device)
 
                 glob_iter = i + self.global_rounds * task
                 s_t = time.time()
-                
                 self.selected_clients = self.select_clients()
                 self.send_models()
-                self.eval(task=task, glob_iter=glob_iter, flag="global")
+
+                if i%self.eval_gap == 0:
+                    print(f"\n-------------Round number: {i}-------------")
+                    self.eval(task=task, glob_iter=glob_iter, flag="global")
 
                 for client in self.selected_clients:
                     client.train(task=task)
 
                 self.receive_models()
+                self.receive_grads()
+                model_origin = copy.deepcopy(self.global_model)
                 self.aggregate_parameters()
 
-                self.Budget.append(time.time() - s_t)
-                print(f"Round {i} Time: {self.Budget[-1]:.2f}")
+                if self.args.seval:
+                    self.spatio_grad_eval(model_origin=model_origin)
 
-            # --- 3. Data Generation (Target Approach) ---
-            # Train generator to capture knowledge of CURRENT task
-            print(f">>> Task {task} Finished. Generating Synthetic Data...")
-            self.data_generation(task=task, available_labels=self.available_labels_current)
+                if self.args.pca_eval:
+                    self.proto_eval(model=self.global_model, task=task, round=i)
+
+                if i%self.eval_gap == 0:
+                    self.eval(task=task, glob_iter=glob_iter, flag="local")
+
+                self.Budget.append(time.time() - s_t)
+                print('-'*25, 'time cost', '-'*25, self.Budget[-1])
+
+            self.data_generation(task=task, available_labels_current=self.available_labels_current)
 
             if int(task/self.N_TASKS) == int(self.args.num_tasks/self.N_TASKS-1):
-                self.eval_task(task=task, glob_iter=glob_iter, flag="global")
+                if self.args.offlog == True and not self.args.debug:  
+                    self.eval_task(task=task, glob_iter=glob_iter, flag="local")
 
-    def data_generation(self, task, available_labels):
-        """
-        Trains the Conditional Generator and saves images to disk.
-        """
-        save_dir = os.path.join(self.synthtic_save_dir, f"task_{task}")
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
+                    # need eval before data update
+                    self.send_models()
+                    self.eval_task(task=task, glob_iter=glob_iter, flag="global")
 
-        # 1. Setup Training
-        self.global_model.eval()
-        for p in self.global_model.parameters(): p.requires_grad = False
-        
-        self.global_generator.train()
-        # Reset generator weights for new task (optional, but often helps stability)
-        # self.global_generator.apply(weight_init) 
-        
-        optimizer_g = optim.Adam(self.global_generator.parameters(), lr=0.001, betas=(0.5, 0.999))
-        
-        # Hyperparams
-        g_steps = 200   # How many steps to train the generator
-        batch_size = 64
-        beta_bn = 1.0   # Weight for BN statistics loss
-        
-        print(f"[Server] Training Generator on {len(available_labels)} classes...")
+    def kd_train(self, student, teacher, criterion, optimizer, task):
+        student.train()
+        teacher.eval()
+        loader = self.get_all_syn_data(task=task) 
+        data_iter = DataIter(loader)
+        for i in range(kd_steps):
+            images = data_iter.next().to(self.device)
+            with torch.no_grad():
+                t_out = teacher(images)#["logits"]
+            s_out = student(images.detach())#["logits"]
+            loss_s = criterion(s_out, t_out.detach())
+            optimizer.zero_grad()
 
-        # 2. Train Generator
-        for step in range(g_steps):
-            optimizer_g.zero_grad()
+            loss_s.backward()
+            torch.nn.utils.clip_grad_norm_(student.parameters(), max_norm=1.0, norm_type=2)
+            optimizer.step()
+        return loss_s.item()
 
-            # Sample Labels from current task
-            targets = np.random.choice(available_labels, batch_size)
-            targets = torch.tensor(targets, dtype=torch.long, device=self.device)
+
+    def data_generation(self, task, available_labels_current):
+        nz = 256
+        #img_size = 32 if dataset == "cifar100" else 64
+        #if dataset == "imagenet100": img_size = 128 
+        #    
+        #img_shape = (3, 32, 32) if dataset == "cifar100" else (3, 64, 64)
+        #if dataset == "imagenet100": img_shape = (3, 128, 128) #(3, 224, 224)
+        # img_size = 224
+        # img_shape = (3, 224, 224)
+        img_size = 32
+        img_shape = (3, 32, 32)
+        generator = Generator(nz=nz, ngf=64, img_size=img_size, nc=3, device=self.device).to(self.device)
+        student = deepcopy(self.global_model)
+        student.apply(weight_init)
+        tmp_dir = os.path.join(self.synthtic_save_dir, "task_{}".format(task))
+        if not os.path.exists(tmp_dir):
+            os.makedirs(tmp_dir) 
+        synthesizer = GlobalSynthesizer(deepcopy(self.global_model), student, generator,
+                    nz=nz, allowed_classes=available_labels_current, img_size=img_shape, init_dataset=None,
+                    save_dir=tmp_dir,
+                    transform=train_transform, normalizer=normalizer,
+                    synthesis_batch_size=synthesis_batch_size, sample_batch_size=sample_batch_size,
+                    iterations=g_steps, warmup=warmup, lr_g=lr_g, lr_z=lr_z,
+                    adv=adv, bn=bn, oh=oh,
+                    reset_l0=reset_l0, reset_bn=reset_bn,
+                    bn_mmt=bn_mmt, is_maml=is_maml, fabric=None, args = self.args)#, args=self.args)
+        
+        criterion = KLDiv(T=T)
+        optimizer = torch.optim.SGD(student.parameters(), lr=0.002, weight_decay=0.0001,
+                            momentum=0.9)
+        #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 200, eta_min=2e-4)
+
+        for it in tqdm(range(syn_round), desc="Data Generation"):
+            synthesizer.synthesize() # generate synthetic data
+            if it >= warmup:
+                loss = self.kd_train(student, self.global_model, criterion, optimizer, task) # kd_steps
+                #test_acc = self._compute_accuracy(student, self.test_loader)
+                #print("Task {}, Data Generation, Epoch {}/{} =>  Student test_acc: {:.2f}".format(
+                #    self.cur_task, it + 1, syn_round, test_acc,))
+                print("Task {}, Data Generation, Epoch {}/{} =>  Student loss: {:.2f}".format(
+                    task, it + 1, syn_round, loss,))
+                #scheduler.step()
+                # wandb.log({'Distill {}, accuracy'.format(self.cur_task): test_acc})
+
+
+        print("For task {}, data generation completed! ".format(task))  
+
             
-            # Sample Noise
-            z = torch.randn(batch_size, self.nz, device=self.device)
-            
-            # Generate
-            gen_imgs = self.global_generator(z, targets)
-            
-            # Loss 1: Class Confidence (Maximize confidence of Teacher on generated images)
-            outputs = self.global_model(gen_imgs)
-            loss_ce = nn.CrossEntropyLoss()(outputs, targets)
-            
-            # Loss 2: BN Statistics Matching
-            loss_bn = get_bn_loss(self.global_model, gen_imgs)
+    # def get_syn_data_loader(self):
+    #     #if self.args["dataset"] =="cifar100":
+    #     #    dataset_size = 50000
+    #     #elif self.args["dataset"] == "tiny_imagenet":
+    #     #    dataset_size = 100000
+    #     #elif self.args["dataset"] == "imagenet100":
+    #     #    dataset_size = 130000
+    #     dataset_size = self.dataset_size
+    #     iters = math.ceil(dataset_size / (self.num_clients*self.N_TASKS*self.batch_size))
+    #     syn_bs = 32 #int(self.nums/iters)
+    #     data_dir = os.path.join(self.save_dir, "task_{}".format(self.cur_task-1))
+    #     print("iters{}, syn_bs:{}, data_dir: {}".format(iters, syn_bs, data_dir))
 
-            loss = loss_ce + beta_bn * loss_bn
-            loss.backward()
-            optimizer_g.step()
+    #     syn_dataset = UnlabeledImageDataset(data_dir, transform=train_transform, nums=self.nums)
+    #     syn_data_loader = torch.utils.data.DataLoader(
+    #         syn_dataset, batch_size=syn_bs, shuffle=True,
+    #         num_workers=0)
+    #     return syn_data_loader
 
-            if step % 50 == 0:
-                print(f"Iter {step}: Loss={loss} (CE={loss_ce}, BN={loss_bn})")
-
-        # 3. Save Synthetic Images
-        print(f"[Server] Saving {self.nums} synthetic images...")
-        self.global_generator.eval()
-        
-        count = 0
-        with torch.no_grad():
-            while count < self.nums:
-                # Generate in batches
-                curr_bs = min(batch_size, self.nums - count)
-                
-                # Balanced generation across available labels
-                targets = np.random.choice(available_labels, curr_bs)
-                targets_tensor = torch.tensor(targets, dtype=torch.long, device=self.device)
-                z = torch.randn(curr_bs, self.nz, device=self.device)
-                
-                gen_imgs = self.global_generator(z, targets_tensor)
-                
-                # Denormalize if your generator outputs [-1, 1] but you save as png
-                # Assuming standard save_image handles [0,1], we map [-1, 1] -> [0, 1]
-                gen_imgs = (gen_imgs + 1.0) / 2.0 
-
-                for k in range(curr_bs):
-                    # Save as: dataset/synthetic_data/task_0/img_0.png
-                    save_path = os.path.join(save_dir, f"img_{count}.png")
-                    save_image(gen_imgs[k], save_path)
-                    count += 1
+    def get_all_syn_data(self, task):
+        data_dir = os.path.join(self.synthtic_save_dir, "task_{}".format(task))
+        syn_dataset = UnlabeledImageDataset(data_dir, transform=train_transform, nums=self.nums)
+        loader = torch.utils.data.DataLoader(
+            syn_dataset, batch_size=sample_batch_size, shuffle=True,
+            num_workers=0, pin_memory=True, sampler=None)
+        return loader

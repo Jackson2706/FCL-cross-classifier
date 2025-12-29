@@ -1,5 +1,5 @@
 {
-    "algorithm": "Coplay",
+    "algorithm": "FedCIL",
     "dataset": "CIFAR100",
     "num_classes": 100,
     "model": "ResNet18",
@@ -11,7 +11,7 @@
     "offlog": false,
     "wandb": false,
     "out_folder": "out",
-    "note": "Coplay_Basic_Setup",
+    "note": "FedCIL_Basic_Setup",
 
     "optimizer": "adam",
     "batch_size": 128,

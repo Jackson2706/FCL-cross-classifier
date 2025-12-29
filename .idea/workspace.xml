@@ -2,11 +2,12 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="7a79edd9-72b2-40fa-8350-64c3036b2bef" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/system/flcore/clients/clientdgr.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/system/flcore/servers/serverdgr.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/hparams/cifar100/FedCIL_cifar100.json" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/system/flcore/clients/clientfedcil.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/system/flcore/servers/serverfedcil.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/system/flcore/clients/clientcoplay.py" beforeDir="false" afterPath="$PROJECT_DIR$/system/flcore/clients/clientcoplay.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/system/flcore/servers/servercoplay.py" beforeDir="false" afterPath="$PROJECT_DIR$/system/flcore/servers/servercoplay.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/hparams/cifar100/Coplay_cifar100.json" beforeDir="false" afterPath="$PROJECT_DIR$/hparams/cifar100/Coplay_cifar100.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/system/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/system/main.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />

@@ -180,6 +180,11 @@ def run(args):
             args.model.fc = nn.Identity()
             args.model = BaseHeadSplit(args.model, args.head)
             server = serverCoplay(args, i)
+        elif args.algorithm == "FedCIL":
+            args.head = copy.deepcopy(args.model.fc)
+            args.model.fc = nn.Identity()
+            args.model = BaseHeadSplit(args.model, args.head)
+            server = serverCoplay(args, i)
         else:
             print(args.algorithm)
             raise NotImplementedError

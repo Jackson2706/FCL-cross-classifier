@@ -153,7 +153,7 @@ def weight_init(m):
 # ==========================================
 # 3. SERVER CLASS
 # ==========================================
-class serverCoplay(Server):
+class serverDGR(Server):
     def __init__(self, args, times):
         super().__init__(args, times)
         self.Budget = []

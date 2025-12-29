@@ -2,8 +2,9 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="7a79edd9-72b2-40fa-8350-64c3036b2bef" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/hparams/cifar100/FedDGR_cifar100.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/system/flcore/servers/serverdgr.py" beforeDir="false" afterPath="$PROJECT_DIR$/system/flcore/servers/serverdgr.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/system/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/system/main.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />

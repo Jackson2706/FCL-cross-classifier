@@ -1,0 +1,48 @@
+{
+    "algorithm": "FedDGR",
+    "dataset": "CIFAR100",
+    "num_classes": 100,
+    "model": "ResNet18",
+    "model_str": "resnet18",
+    "device": "cuda",
+    "device_id": "0",
+
+    "log": true,
+    "offlog": false,
+    "wandb": false,
+    "out_folder": "out",
+    "note": "FedCIL_Basic_Setup",
+
+    "optimizer": "adam",
+    "batch_size": 128,
+    "local_learning_rate": 0.01,
+    "learning_rate_decay": true,
+    "learning_rate_decay_gamma": 0.99,
+
+    "num_clients": 10,
+    "join_ratio": 1.0,
+    "random_join_ratio": false,
+    "client_drop_rate": 0.0,
+    "prev": 0,
+    "times": 1,
+
+    "global_rounds": 10,
+    "local_epochs": 5,
+    "eval_gap": 1,
+    "time_threthold": 10000,
+
+    "num_tasks": 5,
+    "cpt": 20,
+
+    "g_lr": 0.01,
+    "g_steps": 100,
+    "replay_weight": 1.0,
+    "nz": 256,
+    "latent_dim": 256,
+
+    "kd": 0.5,
+
+    "adv": 0.0,
+    "bn": 1.0,
+    "oh": 1.0
+}

@@ -25,7 +25,8 @@ from flcore.servers.serverrefedplus import ReFedPlus
 from flcore.servers.ours_v2 import OursV2
 from flcore.servers.ours import Ours
 from flcore.servers.servercoplay import serverCoplay
-from flcore.servers.serverdgr import
+from flcore.servers.serverdgr import serverDGR
+from flcore.servers.serverfedcil import serverFedCIL
 from flcore.trainmodel.models import *
 
 from flcore.trainmodel.AFFCL_models import AFFCLModel
@@ -37,6 +38,7 @@ from flcore.trainmodel.alexnet import *
 from flcore.trainmodel.mobilenet_v2 import *
 from flcore.trainmodel.transformer import *
 from flcore.trainmodel.vit_prompt_l2p import *
+
 
 warnings.simplefilter("ignore")
 torch.manual_seed(0)
@@ -185,12 +187,12 @@ def run(args):
             args.head = copy.deepcopy(args.model.fc)
             args.model.fc = nn.Identity()
             args.model = BaseHeadSplit(args.model, args.head)
-            server = serverFedDGR(args, i)
+            server = serverDGR(args, i)
         elif args.algorithm == "FedCIL":
             args.head = copy.deepcopy(args.model.fc)
             args.model.fc = nn.Identity()
             args.model = BaseHeadSplit(args.model, args.head)
-            server = serverCoplay(args, i)
+            server = serverFedCIL(args, i)
         else:
             print(args.algorithm)
             raise NotImplementedError

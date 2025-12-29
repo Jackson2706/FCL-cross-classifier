@@ -20,7 +20,8 @@ import numpy as np
 import os
 from torchvision.utils import save_image
 from flcore.servers.serverbase import Server
-from clientFedCIL import clientFedCIL
+from flcore.clients.clientfedcil import clientFedCIL
+
 
 
 # ==========================================

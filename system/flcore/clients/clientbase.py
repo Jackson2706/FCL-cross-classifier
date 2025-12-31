@@ -213,6 +213,34 @@ class Client(object):
         for new_param, old_param in zip(model.parameters(), self.model.parameters()):
             old_param.data = new_param.data.clone()
 
+    def set_parameters_(self, model, only_critic, beta=1, mode=None, gr=False, classifier=None):
+        '''
+        At the beginning of this round:
+        self.model: old user model, note trained yet
+        model: the global model on the server (new model)
+        '''
+        if gr == True:
+            for old_param, new_param in zip(self.classifier.critic.parameters(), classifier.critic.parameters()):
+                if beta == 1:
+                    old_param.data = new_param.data.clone()
+                else:
+                    old_param.data = beta * new_param.data.clone() + (1 - beta) * old_param.data.clone()
+
+        else:
+            if only_critic == True:
+                for old_param, new_param in zip(self.local_generator.critic.parameters(), model.critic.parameters()):
+                    if beta == 1:
+                        old_param.data = new_param.data.clone()
+                    else:
+                        old_param.data = beta * new_param.data.clone() + (1 - beta) * old_param.data.clone()
+
+            else:
+                for old_param, new_param in zip(self.local_generator.parameters(), model.parameters()):
+                    if beta == 1:
+                        old_param.data = new_param.data.clone()
+                    else:
+                        old_param.data = beta * new_param.data.clone() + (1 - beta) * old_param.data.clone()
+
     def clone_model(self, model, target):
         for param, target_param in zip(model.parameters(), target.parameters()):
             target_param.data = param.data.clone()
@@ -242,6 +270,34 @@ class Client(object):
                 test_acc += (torch.sum(torch.argmax(output, dim=1) == y)).item()
                 test_num += y.shape[0]
         
+        return test_acc, test_num
+
+    def test_metrics_(self, task):
+
+        if self.args.model == "FedCIL":
+            model = self.local_generator.critic
+        else:
+            model = self.model
+
+        testloader = self.load_test_data(task=task)
+
+        model.eval()
+
+        test_acc = 0
+        test_num = 0
+
+        with torch.no_grad():
+            for x, y in testloader:
+                if type(x) == type([]):
+                    x[0] = x[0].to(self.device)
+                else:
+                    x = x.to(self.device)
+                y = y.to(self.device)
+                output = model(x)
+
+                test_acc += (torch.sum(torch.argmax(output, dim=1) == y)).item()
+                test_num += y.shape[0]
+
         return test_acc, test_num
 
     def train_metrics(self, task):

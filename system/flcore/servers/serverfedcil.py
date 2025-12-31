@@ -1,19 +1,19 @@
 """
-FedCIL Server Implementation
+FedCIL Server - Accurate Implementation
+Based on actual FedCIL repository structure
 
-Based on "Better Generative Replay for Continual Federated Learning" (ICLR 2023)
-
-Key Server Responsibilities:
-1. Train AC-GAN (Auxiliary Classifier GAN) for generative replay
-2. Aggregate client models with model consolidation
-3. Distribute generator and global model to clients
-4. Enforce consistency across heterogeneous clients
+Handles:
+- WGAN-based generator aggregation
+- Server-side generator training
+- Model consolidation across clients
+- Task-incremental federated learning
 """
 
 import time
+from copy import deepcopy
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 import copy
 import numpy as np
@@ -21,206 +21,19 @@ import os
 from torchvision.utils import save_image
 from flcore.servers.serverbase import Server
 from flcore.clients.clientfedcil import clientFedCIL
-
-
-
-# ==========================================
-# AC-GAN Components
-# ==========================================
-
-class ACGenerator(nn.Module):
-    """
-    AC-GAN Generator for FedCIL
-    Generates images conditioned on class labels
-    """
-
-    def __init__(self, nz=100, ngf=64, img_size=32, nc=3, num_classes=10):
-        super(ACGenerator, self).__init__()
-
-        self.nz = nz
-        self.num_classes = num_classes
-        self.img_size = img_size
-
-        # Label embedding
-        self.label_emb = nn.Embedding(num_classes, nz)
-
-        # Calculate initial size
-        if img_size == 224:
-            self.init_size = 7
-        elif img_size == 64:
-            self.init_size = 4
-        else:
-            self.init_size = 4
-
-        # Initial projection
-        self.l1 = nn.Sequential(
-            nn.Linear(nz * 2, ngf * 8 * self.init_size ** 2),
-            nn.BatchNorm1d(ngf * 8 * self.init_size ** 2),
-            nn.ReLU(True)
-        )
-
-        # Convolutional blocks for different image sizes
-        if img_size == 32:
-            self.conv_blocks = nn.Sequential(
-                self._upsample_block(ngf * 8, ngf * 4),  # 4->8
-                self._upsample_block(ngf * 4, ngf * 2),  # 8->16
-                self._upsample_block(ngf * 2, ngf),  # 16->32
-                nn.Conv2d(ngf, nc, 3, 1, 1),
-                nn.Tanh()
-            )
-        elif img_size == 64:
-            self.conv_blocks = nn.Sequential(
-                self._upsample_block(ngf * 8, ngf * 4),  # 4->8
-                self._upsample_block(ngf * 4, ngf * 2),  # 8->16
-                self._upsample_block(ngf * 2, ngf),  # 16->32
-                self._upsample_block(ngf, ngf // 2),  # 32->64
-                nn.Conv2d(ngf // 2, nc, 3, 1, 1),
-                nn.Tanh()
-            )
-        else:  # 224
-            self.conv_blocks = nn.Sequential(
-                self._upsample_block(ngf * 8, ngf * 4),  # 7->14
-                self._upsample_block(ngf * 4, ngf * 2),  # 14->28
-                self._upsample_block(ngf * 2, ngf),  # 28->56
-                self._upsample_block(ngf, ngf // 2),  # 56->112
-                self._upsample_block(ngf // 2, ngf // 4),  # 112->224
-                nn.Conv2d(ngf // 4, nc, 3, 1, 1),
-                nn.Tanh()
-            )
-
-    def _upsample_block(self, in_channels, out_channels):
-        return nn.Sequential(
-            nn.ConvTranspose2d(in_channels, out_channels, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(True)
-        )
-
-    def forward(self, z, labels):
-        # Embed labels
-        label_emb = self.label_emb(labels)
-        # Concatenate noise and label
-        gen_input = torch.cat([z, label_emb], dim=1)
-        # Generate
-        out = self.l1(gen_input)
-        out = out.view(out.size(0), -1, self.init_size, self.init_size)
-        img = self.conv_blocks(out)
-        return img
-
-
-class ACDiscriminator(nn.Module):
-    """
-    AC-GAN Discriminator with Auxiliary Classifier
-
-    Outputs:
-    - Real/Fake prediction (adversarial loss)
-    - Class prediction (auxiliary classifier)
-    """
-
-    def __init__(self, nc=3, ndf=64, img_size=32, num_classes=10):
-        super(ACDiscriminator, self).__init__()
-
-        self.img_size = img_size
-
-        # Feature extraction
-        if img_size == 32:
-            self.features = nn.Sequential(
-                nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
-                nn.LeakyReLU(0.2, inplace=True),
-
-                nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ndf * 2),
-                nn.LeakyReLU(0.2, inplace=True),
-
-                nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ndf * 4),
-                nn.LeakyReLU(0.2, inplace=True),
-
-                nn.Conv2d(ndf * 4, ndf * 8, 4, 1, 0, bias=False),
-                nn.BatchNorm2d(ndf * 8),
-                nn.LeakyReLU(0.2, inplace=True)
-            )
-        elif img_size == 64:
-            self.features = nn.Sequential(
-                nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
-                nn.LeakyReLU(0.2, inplace=True),
-
-                nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ndf * 2),
-                nn.LeakyReLU(0.2, inplace=True),
-
-                nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ndf * 4),
-                nn.LeakyReLU(0.2, inplace=True),
-
-                nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ndf * 8),
-                nn.LeakyReLU(0.2, inplace=True),
-
-                nn.Conv2d(ndf * 8, ndf * 8, 4, 1, 0, bias=False),
-                nn.BatchNorm2d(ndf * 8),
-                nn.LeakyReLU(0.2, inplace=True)
-            )
-        else:  # 224
-            self.features = nn.Sequential(
-                nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
-                nn.LeakyReLU(0.2, inplace=True),
-
-                nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ndf * 2),
-                nn.LeakyReLU(0.2, inplace=True),
-
-                nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ndf * 4),
-                nn.LeakyReLU(0.2, inplace=True),
-
-                nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ndf * 8),
-                nn.LeakyReLU(0.2, inplace=True),
-
-                nn.AdaptiveAvgPool2d(1)
-            )
-
-        # Adversarial head (real/fake)
-        self.adv_head = nn.Sequential(
-            nn.Linear(ndf * 8, 1),
-            nn.Sigmoid()
-        )
-
-        # Auxiliary classifier head (class prediction)
-        self.aux_head = nn.Linear(ndf * 8, num_classes)
-
-    def forward(self, img):
-        features = self.features(img)
-        features = features.view(features.size(0), -1)
-
-        # Real/fake prediction
-        validity = self.adv_head(features)
-
-        # Class prediction
-        class_pred = self.aux_head(features)
-
-        return validity, class_pred
-
-
-def weights_init(m):
-    """Initialize network weights"""
-    classname = m.__class__.__name__
-    if classname.find('Conv') != -1:
-        nn.init.normal_(m.weight.data, 0.0, 0.02)
-    elif classname.find('BatchNorm') != -1:
-        nn.init.normal_(m.weight.data, 1.0, 0.02)
-        nn.init.constant_(m.bias.data, 0)
-
-
-# ==========================================
-# FedCIL Server
-# ==========================================
+from flcore.trainmodel.FedCIL_models import WGAN
+from utils.data_utils import *
+from utils.model_utils import ParamDict
 
 class serverFedCIL(Server):
     """
-    FedCIL Server Implementation
+    FedCIL Server with WGAN Aggregation
 
-    Implements the server-side logic for Better Generative Replay
+    Responsibilities:
+    1. Aggregate local generators from clients
+    2. Train global generator on aggregated knowledge
+    3. Distribute global generator to clients
+    4. Coordinate continual learning across tasks
     """
 
     def __init__(self, args, times):
@@ -228,123 +41,202 @@ class serverFedCIL(Server):
 
         self.Budget = []
 
-        # --- Configuration ---
-        if 'cifar100' in self.dataset.lower():
+        # --- Dataset Configuration ---
+        if 'cifar' in self.dataset.lower():
             self.img_size = 32
-            self.nz = 256
+            self.nz = 110 if 'cifar100' in self.dataset.lower() else 100
             self.nc = 3
-        elif 'imagenet' in self.dataset.lower():
-            self.img_size = 64 if '100' in self.dataset else 224
-            self.nz = 256
-            self.nc = 3
+            self.num_classes = 100 if 'cifar100' in self.dataset.lower() else 10
+            self.c_channel_size = 64
+            self.g_channel_size = 64
+        elif 'mnist' in self.dataset.lower():
+            self.img_size = 28
+            self.nz = 100
+            self.nc = 1
+            self.num_classes = 10
+            self.c_channel_size = 128
+            self.g_channel_size = 128
+        elif 'emnist' in self.dataset.lower():
+            self.img_size = 28
+            self.nz = 100
+            self.nc = 1
+            self.num_classes = 26 if 'L' in self.dataset else 47
+            self.c_channel_size = 128
+            self.g_channel_size = 128
         else:
             self.img_size = 32
             self.nz = 100
             self.nc = 3
+            self.num_classes = 10
+            self.c_channel_size = 64
+            self.g_channel_size = 64
 
-        # --- AC-GAN Components ---
-        self.generator = ACGenerator(
-            nz=self.nz,
-            ngf=64,
-            img_size=self.img_size,
-            nc=self.nc,
-            num_classes=args.num_classes
-        ).to(self.device)
+        # --- Initialize Global WGAN Generator ---
 
-        self.discriminator = ACDiscriminator(
-            nc=self.nc,
-            ndf=64,
-            img_size=self.img_size,
-            num_classes=args.num_classes
-        ).to(self.device)
-
-        # Initialize weights
-        self.generator.apply(weights_init)
-        self.discriminator.apply(weights_init)
+        # print(f"nz: {self.nz}")
+        self.global_generator = self._create_wgan()
 
         # --- Optimizers ---
-        self.g_lr = getattr(args, 'g_lr', 0.0002)
-        self.d_lr = getattr(args, 'd_lr', 0.0002)
+        self.lr = getattr(args, 'lr', 0.0001)
+        self.lr_CIFAR = getattr(args, 'lr_CIFAR', 0.0002)
+        self.beta1 = getattr(args, 'beta1', 0.5)
+        self.beta2 = getattr(args, 'beta2', 0.999)
+        self.weight_decay = getattr(args, 'weight_decay', 0.0)
+        self.generator_lambda = getattr(args, 'generator_lambda', 10.0)
+        self.mode='partial' if 'partial' in self.algorithm.lower() else 'all'
 
-        self.optimizer_G = optim.Adam(
-            self.generator.parameters(),
-            lr=self.g_lr,
-            betas=(0.5, 0.999)
-        )
+        # TODO Initialize ACGAN: Source output / Auxilary classifier.
+        self._initialize_optimizers()
 
-        self.optimizer_D = optim.Adam(
-            self.discriminator.parameters(),
-            lr=self.d_lr,
-            betas=(0.5, 0.999)
-        )
-
-        # --- Loss Functions ---
-        self.adversarial_loss = nn.BCELoss()
-        self.auxiliary_loss = nn.CrossEntropyLoss()
-
-        # --- Hyperparameters ---
-        self.gan_steps = getattr(args, 'gan_steps', 200)  # GAN training iterations
-        self.lambda_aux = getattr(args, 'lambda_aux', 1.0)  # Auxiliary loss weight
-        self.consolidation_weight = getattr(args, 'consolidation_weight', 0.1)
-
-        # --- Previous Generator for Consolidation ---
-        self.prev_generator = None
+        # --- Training Parameters ---
+        self.importance_of_new_task = getattr(args, 'importance_new_task', 0.5)
+        self.generator_iterations = getattr(args, 'generator_iterations', 50)
 
         # Initialize clients
         self.set_clients(clientFedCIL)
+        for client in self.clients:
+            client.local_generator = self.global_generator
 
-        print(f"[Server] FedCIL initialized | ImgSize={self.img_size}, nz={self.nz}, "
-              f"num_classes={args.num_classes}")
+        # Track learned classes globally
+        self.global_classes = []  # Changed to list for compatibility
+
+        print(f"[Server] FedCIL initialized | Dataset: {self.dataset}, "
+              f"ImgSize: {self.img_size}, nz: {self.nz}, Classes: {self.num_classes}")
+
+    def _create_wgan(self):
+        """
+        Create WGAN generator
+        This should import from your gan module
+        """
+        generator = WGAN(
+            z_size=self.nz,
+            image_size=self.img_size,
+            image_channel_size=self.nc,
+            c_channel_size=self.c_channel_size,
+            g_channel_size=self.g_channel_size,
+            dataset=self.dataset
+        )
+        return generator.to(self.device)
+
+    def _initialize_optimizers(self):
+        """Initialize optimizers for generator"""
+        if self.global_generator is None:
+            return
+
+        # Initialize weights
+        self.global_generator.apply(self._weights_init)
+
+        # Create optimizers
+        if 'cifar' in self.dataset.lower():
+            optimizerD = optim.Adam(
+                self.global_generator.critic.parameters(),
+                lr=self.lr_CIFAR,
+                betas=(self.beta1, self.beta2)
+            )
+            optimizerG = optim.Adam(
+                self.global_generator.generator.parameters(),
+                lr=self.lr_CIFAR,
+                betas=(self.beta1, self.beta2)
+            )
+        else:
+            optimizerD = optim.Adam(
+                self.global_generator.critic.parameters(),
+                lr=self.lr,
+                weight_decay=self.weight_decay,
+                betas=(self.beta1, self.beta2)
+            )
+            optimizerG = optim.Adam(
+                self.global_generator.generator.parameters(),
+                lr=self.lr,
+                weight_decay=self.weight_decay,
+                betas=(self.beta1, self.beta2)
+            )
+
+        self.global_generator.set_generator_optimizer(optimizerG)
+        self.global_generator.set_critic_optimizer(optimizerD)
+        self.global_generator.set_lambda(self.generator_lambda)
+
+        # TODO Gausian Initialize
+
+    def _weights_init(self, m):
+        """Initialize network weights"""
+        classname = m.__class__.__name__
+        if classname.find('Conv') != -1:
+            m.weight.data.normal_(0.0, 0.02)
+        elif classname.find('BatchNorm') != -1:
+            m.weight.data.normal_(1, 0.02)
+            m.bias.data.fill_(0)
 
     def train(self):
-        """Main training loop for FedCIL"""
-
         for task in range(self.args.num_tasks):
-            print(f"\n{'=' * 60}")
-            print(f"Task {task} / {self.args.num_tasks}")
-            print('=' * 60)
+            print(f"\n================ Current Task: {task} =================")
 
-            # --- Task Setup ---
-            if task > 0:
+            # --- Label Info Setup ---
+            if task == 0:
+                available_labels = set()
+                available_labels_current = set()
+                for u in self.clients:
+                    available_labels.update(u.classes_so_far)
+                    available_labels_current.update(u.current_labels)
+                for u in self.clients:
+                    u.available_labels = list(available_labels)
+                    u.available_labels_current = list(available_labels_current)
+                    u.available_labels_past = []
+            else:
                 self.current_task = task
                 torch.cuda.empty_cache()
+                for i in range(len(self.clients)):
+                    if self.args.dataset == 'IMAGENET1k':
+                        read_func = read_client_data_FCL_imagenet1k
+                    elif 'cifar100' in self.args.dataset.lower():
+                        read_func = read_client_data_FCL_cifar100
+                    else:
+                        read_func = read_client_data_FCL_cifar10
 
-                # Load new task data for each client
-                for i, client in enumerate(self.clients):
-                    # Your data loading logic here
-                    # This should be adapted to your specific data loading function
-                    pass
+                    train_data, label_info = read_func(i, task=task, classes_per_task=self.args.cpt, count_labels=True)
+                    self.clients[i].next_task(train_data, label_info)
 
-            # --- Federated Learning Rounds ---
+                # Update global labels
+                available_labels = set()
+                available_labels_current = set()
+                for u in self.clients:
+                    available_labels.update(u.classes_so_far)
+                    available_labels_current.update(u.current_labels)
+
+                # Get past labels from one client (since they are consistent now)
+                available_labels_past = self.clients[0].classes_past_task
+
+                for u in self.clients:
+                    u.available_labels = list(available_labels)
+                    u.available_labels_current = list(available_labels_current)
+                    u.available_labels_past = list(available_labels_past)
+
+            print(f"[Server] Global classes so far: {self.global_classes}")
+
+            # --- Federated Training Rounds ---
             for round_idx in range(self.global_rounds):
-                print(f"\n--- Round {round_idx + 1}/{self.global_rounds} ---")
-
                 start_time = time.time()
                 glob_iter = round_idx + self.global_rounds * task
 
                 # Select clients
                 self.selected_clients = self.select_clients()
 
-                # Evaluate before training
-                self.eval(task=task, glob_iter=glob_iter, flag="global")
+                # Send models to clients
+                self.send_parameters_(mode=self.mode, only_critic = False)
+
+                if round_idx%self.eval_gap == 0:
+                    print(f"\n-------------Round number: {round_idx}-------------")
+                    self.eval(task=task, glob_iter=glob_iter, flag="global")
 
                 # Client training
                 for client in self.selected_clients:
-                    # Send global model copy for consistency enforcement
-                    client.set_global_model_copy(self.global_model)
-                    # Send generator
-                    client.set_generator(self.generator)
-                    # Train
+                    client.glob_iter = glob_iter
+                    client.available_labels = list(self.global_classes)
                     client.train(task=task)
 
-                # Receive models
+                # Receive and aggregate models
                 self.receive_models()
-
-                # Aggregate with consolidation
-                self.aggregate_with_consolidation()
-
-                # Send updated models
-                self.send_models()
+                self.aggregate_generators()
 
                 self.Budget.append(time.time() - start_time)
                 print(f"Round Time: {self.Budget[-1]:.2f}s")
@@ -352,201 +244,167 @@ class serverFedCIL(Server):
             # --- Post-Task Processing ---
             print(f"\n--- Task {task} Post-Processing ---")
 
-            # Train AC-GAN on aggregated knowledge
-            self.train_acgan()
+            # Additional generator training on server
+            if self.global_generator:
+                self.train_global_generator(task)
 
             # Visualize generated samples
-            self.visualize_generated_samples(task)
+            self.visualize_samples(task)
 
-            # Evaluate forgetting
+            # Evaluate on all tasks
+            self.evaluate_all_tasks(task)
+
+            print(f"\n>>> Task {task} finished. Evaluating Forgetting Rate...")
             self.eval_task(task=task, glob_iter=task, flag="global")
 
-            print(f"\nTask {task} completed.\n")
+    def _load_task_data(self, task):
+        """Load new task data for all clients"""
+        # This should be implemented based on your data loading logic
+        # Example:
+        # for i, client in enumerate(self.clients):
+        #     train_data, label_info = read_client_data_FCL(i, task=task)
+        #     client.next_task(train_data, label_info)
+        pass
 
-    def aggregate_with_consolidation(self):
+    def send_models(self, task, glob_iter):
         """
-        Aggregate client models with model consolidation
-
-        Model consolidation helps stabilize federated training
-        by smoothly updating the global model
+        Send global generator and parameters to clients
         """
-        print(f"[Server] Aggregating {len(self.uploaded_models)} client models with consolidation")
+        for client in self.clients:
+            # Send server's global generator for KD
+            if self.global_generator:
+                client.set_server_generator(self.global_generator)
 
-        if not self.uploaded_models:
+                # For first round of first task, also set as local generator
+                if task == 0 and glob_iter == 0:
+                    client.set_local_generator(copy.deepcopy(self.global_generator))
+
+    def receive_models(self):
+        """Receive models from selected clients"""
+        print(f"[Server] Receiving models from {len(self.selected_clients)} clients")
+
+        self.uploaded_generators = []
+        for client in self.selected_clients:
+            if client.local_generator:
+                self.uploaded_generators.append(client.local_generator)
+
+    def aggregate_generators(self):
+        """
+        Aggregate generators from clients using FedAvg
+        """
+        if not self.uploaded_generators or not self.global_generator:
+            print("[Server] No generators to aggregate")
             return
 
-        # Standard FedAvg aggregation
-        global_dict = self.global_model.state_dict()
+        print(f"[Server] Aggregating {len(self.uploaded_generators)} generators")
 
-        for key in global_dict.keys():
+        # Aggregate generator parameters
+        global_gen_dict = self.global_generator.generator.state_dict()
+
+        for key in global_gen_dict.keys():
             if 'num_batches_tracked' in key:
                 continue
 
-            # Weighted average of client models
-            global_dict[key] = torch.zeros_like(global_dict[key])
+            global_gen_dict[key] = torch.zeros_like(global_gen_dict[key])
 
-            for client_model in self.uploaded_models:
-                client_dict = client_model.state_dict()
-                global_dict[key] += client_dict[key] / len(self.uploaded_models)
+            for gen in self.uploaded_generators:
+                gen_dict = gen.generator.state_dict()
+                global_gen_dict[key] += gen_dict[key] / len(self.uploaded_generators)
 
-        self.global_model.load_state_dict(global_dict)
+        self.global_generator.generator.load_state_dict(global_gen_dict)
 
-        print("[Server] Aggregation complete")
+        # Aggregate critic (discriminator) parameters
+        global_critic_dict = self.global_generator.critic.state_dict()
 
-    def train_acgan(self):
+        for key in global_critic_dict.keys():
+            if 'num_batches_tracked' in key:
+                continue
+
+            global_critic_dict[key] = torch.zeros_like(global_critic_dict[key])
+
+            for gen in self.uploaded_generators:
+                critic_dict = gen.critic.state_dict()
+                global_critic_dict[key] += critic_dict[key] / len(self.uploaded_generators)
+
+        self.global_generator.critic.load_state_dict(global_critic_dict)
+
+        print("[Server] Generator aggregation complete")
+
+    def train_global_generator(self, task):
         """
-        Train AC-GAN (Auxiliary Classifier GAN)
-
-        This creates a generator that can produce samples from all learned classes
-        The auxiliary classifier helps maintain class-specific generation quality
+        Additional training of global generator on server
+        Using knowledge from all clients
         """
-        print(f"[Server] Training AC-GAN for {self.gan_steps} steps")
-
-        # Collect all learned classes from clients
-        all_classes = set()
-        for client in self.clients:
-            all_classes.update(client.learned_classes)
-
-        classes_list = list(all_classes)
-
-        if len(classes_list) == 0:
-            print("[Server] No classes to train GAN on")
+        if not self.global_generator:
             return
 
-        print(f"[Server] Training GAN on {len(classes_list)} classes: {classes_list}")
+        print(f"[Server] Training global generator for task {task}")
 
-        self.generator.train()
-        self.discriminator.train()
+        self.global_generator.train()
+        classes_list = list(self.global_classes)
+
+        if not classes_list:
+            return
 
         batch_size = 64
 
-        # Loss tracking
-        g_losses = []
-        d_losses = []
+        for step in range(self.generator_iterations):
+            # Sample data from generator
+            noise, aux_label, _ = self._generate_noise(batch_size, classes_list)
 
-        for step in range(self.gan_steps):
-            # ===================================
-            # Train Discriminator
-            # ===================================
-            self.optimizer_D.zero_grad()
+            # Train generator
+            train_results = self.global_generator.train_a_batch(
+                x=noise,  # In reality, this should be real data
+                y=aux_label,
+                classes_so_far=classes_list,
+                importance_of_new_task=self.importance_of_new_task
+            )
 
-            # Sample labels
-            labels = torch.tensor(
-                np.random.choice(classes_list, batch_size),
-                dtype=torch.long
-            ).to(self.device)
+            if (step + 1) % 20 == 0:
+                print(f"  Step [{step+1}/{self.generator_iterations}] | "
+                      f"C Loss: {train_results['c_loss']:.4f}, "
+                      f"G Loss: {train_results['g_loss']:.4f}")
 
-            # Generate fake images
-            z = torch.randn(batch_size, self.nz).to(self.device)
-            fake_imgs = self.generator(z, labels).detach()
+        print(f"[Server] Global generator training complete")
 
-            # Real and fake labels for adversarial loss
-            valid = torch.ones(batch_size, 1).to(self.device)
-            fake = torch.zeros(batch_size, 1).to(self.device)
+    def _generate_noise(self, batch_size, classes_list):
+        """Generate noise for generator training"""
+        noise = torch.FloatTensor(batch_size, self.nz, 1, 1)
+        aux_label = torch.LongTensor(batch_size)
+        dis_label = torch.FloatTensor(batch_size)
 
-            # Discriminator on fake images
-            fake_validity, fake_aux = self.discriminator(fake_imgs)
-            d_fake_loss = self.adversarial_loss(fake_validity, fake)
-            d_fake_aux_loss = self.auxiliary_loss(fake_aux, labels)
+        # Sample labels
+        label = np.random.choice(classes_list, batch_size)
 
-            # Get real images from clients (sampling strategy)
-            real_imgs, real_labels = self._sample_real_images(batch_size, classes_list)
+        # Create noise with class encoding
+        noise_ = np.random.normal(0, 1, (batch_size, self.nz))
+        class_onehot = np.zeros((batch_size, self.num_classes))
+        class_onehot[np.arange(batch_size), label] = 1
+        noise_[np.arange(batch_size), :self.num_classes] = class_onehot[np.arange(batch_size)]
 
-            if real_imgs is not None:
-                # Discriminator on real images
-                real_validity, real_aux = self.discriminator(real_imgs)
-                d_real_loss = self.adversarial_loss(real_validity, valid)
-                d_real_aux_loss = self.auxiliary_loss(real_aux, real_labels)
+        noise_ = torch.from_numpy(noise_).float()
+        noise.copy_(noise_.view(batch_size, self.nz, 1, 1))
+        aux_label.copy_(torch.from_numpy(label))
 
-                # Total discriminator loss
-                d_loss = (
-                                 d_real_loss + d_fake_loss +
-                                 self.lambda_aux * (d_real_aux_loss + d_fake_aux_loss)
-                         ) / 2
-            else:
-                # If no real images available, use only fake
-                d_loss = d_fake_loss + self.lambda_aux * d_fake_aux_loss
+        noise = torch.squeeze(noise).to(self.device)
+        aux_label = aux_label.to(self.device)
+        dis_label = dis_label.to(self.device).fill_(0)
 
-            d_loss.backward()
-            self.optimizer_D.step()
+        return noise, aux_label, dis_label
 
-            # ===================================
-            # Train Generator
-            # ===================================
-            self.optimizer_G.zero_grad()
+    def visualize_samples(self, task):
+        """Generate and save sample images"""
+        if not self.global_generator:
+            return
 
-            # Generate new fake images
-            z = torch.randn(batch_size, self.nz).to(self.device)
-            labels = torch.tensor(
-                np.random.choice(classes_list, batch_size),
-                dtype=torch.long
-            ).to(self.device)
-
-            gen_imgs = self.generator(z, labels)
-
-            # Generator wants discriminator to classify fake as real
-            validity, aux_pred = self.discriminator(gen_imgs)
-
-            g_adv_loss = self.adversarial_loss(validity, valid)
-            g_aux_loss = self.auxiliary_loss(aux_pred, labels)
-
-            g_loss = g_adv_loss + self.lambda_aux * g_aux_loss
-
-            # Generator consolidation (if previous generator exists)
-            if self.prev_generator is not None:
-                self.prev_generator.eval()
-                with torch.no_grad():
-                    prev_imgs = self.prev_generator(z, labels)
-
-                consolidation_loss = F.mse_loss(gen_imgs, prev_imgs)
-                g_loss += self.consolidation_weight * consolidation_loss
-
-            g_loss.backward()
-            self.optimizer_G.step()
-
-            # Track losses
-            g_losses.append(g_loss.item())
-            d_losses.append(d_loss.item())
-
-            # Periodic logging
-            if (step + 1) % 50 == 0:
-                print(f"  Step [{step + 1}/{self.gan_steps}] | "
-                      f"D Loss: {np.mean(d_losses[-50:]):.4f} | "
-                      f"G Loss: {np.mean(g_losses[-50:]):.4f}")
-
-        # Update previous generator for next task
-        self.prev_generator = copy.deepcopy(self.generator)
-        self.prev_generator.eval()
-
-        print(f"[Server] AC-GAN training complete | "
-              f"Avg D Loss: {np.mean(d_losses):.4f} | "
-              f"Avg G Loss: {np.mean(g_losses):.4f}")
-
-    def _sample_real_images(self, batch_size, classes_list):
-        """
-        Sample real images from client models
-        This is used for discriminator training
-        """
-        # This is a placeholder - implement based on your data loading strategy
-        # You might want to cache some real images from clients
-        return None, None
-
-    def visualize_generated_samples(self, task):
-        """Generate and save sample images from the generator"""
-        print(f"[Server] Generating visualization samples for task {task}")
+        print(f"[Server] Generating visualization for task {task}")
 
         save_dir = os.path.join("output_fedcil", self.dataset, f"task_{task}")
         os.makedirs(save_dir, exist_ok=True)
 
-        self.generator.eval()
+        self.global_generator.eval()
 
-        # Get all learned classes
-        all_classes = set()
-        for client in self.clients:
-            all_classes.update(client.learned_classes)
-
-        classes_list = sorted(list(all_classes))
-
+        classes_list = sorted(list(self.global_classes))
         if not classes_list:
             return
 
@@ -557,28 +415,58 @@ class serverFedCIL(Server):
                 class_dir = os.path.join(save_dir, f"class_{class_id}")
                 os.makedirs(class_dir, exist_ok=True)
 
-                z = torch.randn(samples_per_class, self.nz).to(self.device)
-                labels = torch.full((samples_per_class,), class_id, dtype=torch.long).to(self.device)
+                # Generate samples
+                noise, aux_label, _ = self._generate_noise(
+                    samples_per_class,
+                    [class_id] * samples_per_class
+                )
 
-                gen_imgs = self.generator(z, labels)
-                gen_imgs = (gen_imgs + 1) / 2.0  # Denormalize from [-1, 1] to [0, 1]
+                gen_imgs = self.global_generator.generator(noise)
 
+                # Normalize to [0, 1]
+                gen_imgs = (gen_imgs + 1) / 2.0
+
+                # Save individual images
                 for idx in range(samples_per_class):
                     save_path = os.path.join(class_dir, f"sample_{idx}.png")
                     save_image(gen_imgs[idx], save_path)
 
-        print(f"[Server] Saved samples to {save_dir}")
+        print(f"[Server] Samples saved to {save_dir}")
 
-    def send_models(self):
-        """Send global model and generator to clients"""
-        for client in self.clients:
-            client.set_parameters(self.global_model)
-            client.set_generator(self.generator)
+    def evaluate_all(self, save=True, selected=False):
+        """Evaluate on current task"""
+        # Call parent class evaluation
+        test_ids, test_samples, test_accs, test_losses = self.test(selected=selected)
 
-    def receive_models(self):
-        """Receive models from selected clients"""
-        print(f"[Server] Receiving models from {len(self.selected_clients)} clients")
+        glob_acc = np.sum(test_accs) * 1.0 / np.sum(test_samples)
+        glob_loss = np.sum([x * y for (x, y) in zip(test_samples, test_losses)]) / np.sum(test_samples)
 
-        self.uploaded_models = []
-        for client in self.selected_clients:
-            self.uploaded_models.append(client.model)
+        if save:
+            self.metrics['glob_acc'].append(glob_acc)
+            self.metrics['glob_loss'].append(glob_loss)
+
+        print(f"[Server] Current Task Accuracy: {glob_acc:.4f}, Loss: {glob_loss:.4f}")
+
+    def evaluate_all_tasks(self, task):
+        """Evaluate forgetting on all learned tasks"""
+        print(f"\n[Server] Evaluating all tasks up to task {task}")
+
+        # This requires task-specific test loaders
+        # Implementation depends on your data loading structure
+
+        task_accs = {}
+        for t in range(task + 1):
+            # Get accuracy for task t
+            # task_accs[t] = self.test_task(t)
+            pass
+
+        # Compute average accuracy
+        if task_accs:
+            avg_acc = np.mean(list(task_accs.values()))
+            print(f"[Server] Average accuracy across all tasks: {avg_acc:.4f}")
+
+            # Compute forgetting
+            if task > 0:
+                # Compare with initial accuracy on each task
+                forgetting = 0  # Implement forgetting calculation
+                print(f"[Server] Average forgetting: {forgetting:.4f}")

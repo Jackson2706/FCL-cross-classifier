@@ -119,6 +119,19 @@ class Server(object):
             client.send_time_cost['num_rounds'] += 1
             client.send_time_cost['total_cost'] += 2 * (time.time() - start_time)
 
+    def send_parameters_(self, mode='all', beta=1, selected=False, only_critic=False, gr=False):
+        clients = self.clients
+        if selected:
+            assert (self.selected_clients is not None and len(self.selected_clients) > 0)
+            clients = self.selected_clients
+
+        for user in clients:
+            if gr == True:
+                user.set_parameters_(self.global_generator, beta=beta, only_critic=only_critic, mode=mode, gr=gr,
+                                     classifier=self.classifier)  # classifier: from server
+            else:
+                user.set_parameters_(self.global_generator, beta=beta, only_critic=only_critic, mode=mode, gr=gr)
+
     def receive_models(self):
         assert (len(self.selected_clients) > 0)
 
@@ -215,6 +228,44 @@ class Server(object):
 
         return ids, num_samples, tot_correct
 
+    def test_metrics_(self, task, glob_iter, flag):
+
+        num_samples = []
+        tot_correct = []
+        for c in self.clients:
+            ct, ns = c.test_metrics_(task=task)
+            tot_correct.append(ct * 1.0)
+            num_samples.append(ns)
+
+            test_acc = sum(tot_correct) * 1.0 / sum(num_samples)
+
+            if flag != "off":
+                if flag == "global":
+                    subdir = os.path.join(self.save_folder, f"Client_Global/Client_{c.id}")
+                    log_key = f"Client_Global/Client_{c.id}/Averaged Test Accurancy"
+                elif flag == "local":
+                    subdir = os.path.join(self.save_folder, f"Client_Local/Client_{c.id}")
+                    log_key = f"Client_Local/Client_{c.id}/Averaged Test Accurancy"
+
+                if self.args.wandb:
+                    wandb.log({log_key: test_acc}, step=glob_iter)
+
+                if self.offlog:
+                    os.makedirs(subdir, exist_ok=True)
+
+                    file_path = os.path.join(subdir, "test_accuracy.csv")
+                    file_exists = os.path.isfile(file_path)
+
+                    with open(file_path, mode="w", newline="") as f:
+                        writer = csv.writer(f)
+                        if not file_exists:
+                            writer.writerow(["Step", "Test Accuracy"])
+                        writer.writerow([glob_iter, test_acc])
+
+        ids = [c.id for c in self.clients]
+
+        return ids, num_samples, tot_correct
+
     def train_metrics(self, task=None):
 
         num_samples = []
@@ -290,6 +341,41 @@ class Server(object):
 
         for t in range(self.N_TASKS):
             stats = self.test_metrics(task=t, glob_iter=glob_iter, flag="off")
+            test_acc = sum(stats[2]) * 1.0 / sum(stats[1])
+            accuracy_on_all_task.append(test_acc)
+
+        if flag == "global":
+            self.global_accuracy_matrix.append(accuracy_on_all_task)
+            accuracy_matrix = self.global_accuracy_matrix
+            subdir = os.path.join(self.save_folder, "Global")
+            log_key = "Global/Averaged Forgetting"
+        elif flag == "local":
+            self.local_accuracy_matrix.append(accuracy_on_all_task)
+            accuracy_matrix = self.local_accuracy_matrix
+            subdir = os.path.join(self.save_folder, "Local")
+            log_key = "Local/Averaged Forgetting"
+
+        forgetting = metric_average_forgetting(int(task%self.N_TASKS), accuracy_matrix)
+
+        if self.args.wandb:
+            wandb.log({log_key: forgetting}, step=glob_iter)
+
+        print(f"{log_key}: {forgetting:.4f}")
+
+        if self.offlog:
+            os.makedirs(subdir, exist_ok=True)
+
+            csv_filename = os.path.join(subdir, f"{self.args.algorithm}_accuracy_matrix.csv")
+            with open(csv_filename, mode="w", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerows(accuracy_matrix)
+
+    # evaluate after end 1 task
+    def eval_task_(self, task, glob_iter, flag):
+        accuracy_on_all_task = []
+
+        for t in range(self.N_TASKS):
+            stats = self.test_metrics_(task=t, glob_iter=glob_iter, flag="off")
             test_acc = sum(stats[2]) * 1.0 / sum(stats[1])
             accuracy_on_all_task.append(test_acc)
 

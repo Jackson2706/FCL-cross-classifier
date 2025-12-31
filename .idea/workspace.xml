@@ -2,8 +2,14 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="7a79edd9-72b2-40fa-8350-64c3036b2bef" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/hparams/cifar100/FedCIL_cifar100.json" beforeDir="false" afterPath="$PROJECT_DIR$/hparams/cifar100/FedCIL_cifar100.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/system/flcore/clients/clientbase.py" beforeDir="false" afterPath="$PROJECT_DIR$/system/flcore/clients/clientbase.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/system/flcore/clients/clientfedcil.py" beforeDir="false" afterPath="$PROJECT_DIR$/system/flcore/clients/clientfedcil.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/system/flcore/servers/serverbase.py" beforeDir="false" afterPath="$PROJECT_DIR$/system/flcore/servers/serverbase.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/system/flcore/servers/serverfedcil.py" beforeDir="false" afterPath="$PROJECT_DIR$/system/flcore/servers/serverfedcil.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/system/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/system/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/system/flcore/trainmodel/FedCIL_generator.py" beforeDir="false" afterPath="$PROJECT_DIR$/system/flcore/trainmodel/FedCIL_generator.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/system/flcore/trainmodel/FedCIL_models.py" beforeDir="false" afterPath="$PROJECT_DIR$/system/flcore/trainmodel/FedCIL_models.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -61,6 +67,15 @@
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/system/flcore/servers/ours.py</url>
           <option name="timeStamp" value="1" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/system/flcore/trainmodel/AFFCL_models.py</url>
+          <option name="timeStamp" value="2" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/system/flcore/clients/clientfedcil.py</url>
+          <line>11</line>
+          <option name="timeStamp" value="3" />
         </line-breakpoint>
       </breakpoints>
     </breakpoint-manager>

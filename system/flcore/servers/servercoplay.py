@@ -265,7 +265,7 @@ class serverCoplay(Server):
             print(f"\n>>> [Eval] Detailed Evaluation for Task {task} (Real vs Synthetic)")
 
             # 1. Visualization & Structured Dataset Generation
-            debug_dir = os.path.join("output_debug", self.args.dataset, f"task_{task}")
+            debug_dir = os.path.join("output_coplay", self.args.dataset, f"task_{task}")
             os.makedirs(debug_dir, exist_ok=True)
 
             self.global_generator.eval()
@@ -511,3 +511,4 @@ class serverCoplay(Server):
                 "label": clean_labels
             }
             self.uploaded_models.append(client.model)
+

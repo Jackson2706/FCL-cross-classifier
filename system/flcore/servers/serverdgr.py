@@ -265,7 +265,7 @@ class serverDGR(Server):
             print(f"\n>>> [Eval] Detailed Evaluation for Task {task} (Real vs Synthetic)")
 
             # 1. Visualization & Structured Dataset Generation
-            debug_dir = os.path.join("output_debug", self.args.dataset, f"task_{task}")
+            debug_dir = os.path.join("output_feddgr", self.args.dataset, f"task_{task}")
             os.makedirs(debug_dir, exist_ok=True)
 
             self.global_generator.eval()
@@ -511,3 +511,41 @@ class serverDGR(Server):
                 "label": clean_labels
             }
             self.uploaded_models.append(client.model)
+
+    def visualize_generated_samples(self, task):
+        """Generate and save sample images from the generator"""
+        print(f"[Server] Generating visualization samples for task {task}")
+
+        save_dir = os.path.join("output_fedcil", self.dataset, f"task_{task}")
+        os.makedirs(save_dir, exist_ok=True)
+
+        self.global_generator.eval()
+
+        # Get all learned classes
+        all_classes = set()
+        for client in self.clients:
+            all_classes.update(client.learned_classes)
+
+        classes_list = sorted(list(all_classes))
+
+        if not classes_list:
+            return
+
+        samples_per_class = 10
+
+        with torch.no_grad():
+            for class_id in classes_list:
+                class_dir = os.path.join(save_dir, f"class_{class_id}")
+                os.makedirs(class_dir, exist_ok=True)
+
+                z = torch.randn(samples_per_class, self.nz).to(self.device)
+                labels = torch.full((samples_per_class,), class_id, dtype=torch.long).to(self.device)
+
+                gen_imgs = self.global_generator(z, labels)
+                gen_imgs = (gen_imgs + 1) / 2.0  # Denormalize from [-1, 1] to [0, 1]
+
+                for idx in range(samples_per_class):
+                    save_path = os.path.join(class_dir, f"sample_{idx}.png")
+                    save_image(gen_imgs[idx], save_path)
+
+        print(f"[Server] Saved samples to {save_dir}")

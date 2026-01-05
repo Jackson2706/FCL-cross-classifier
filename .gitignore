@@ -5,9 +5,14 @@ dataset/imagenet1k-classes
 dataset/imagenet1k_224_classes
 dataset/synthetic_data
 dataset/imagenet_resize
+
 wandb
 test.py
 output_fedweit
+output_fedcil
+output_coplay
+output_oursv2
+output_feddgr
 pretrain_model/task_single_model
 pretrain_model/task_sofar_model
 .env

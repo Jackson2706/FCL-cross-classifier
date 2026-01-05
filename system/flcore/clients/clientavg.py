@@ -31,8 +31,6 @@ class clientAVG(Client):
         if self.args.teval:
             self.grad_eval(old_model=self.model)
 
-        # self.model.cpu()
-
         if self.learning_rate_decay:
             self.learning_rate_scheduler.step()
 

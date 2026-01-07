@@ -13,6 +13,7 @@ from argparse import Namespace
 from types import SimpleNamespace
 
 from flcore.servers.serveravg import FedAvg
+from flcore.servers.serverfedprox import FedProx
 from flcore.servers.serverala import FedALA
 from flcore.servers.serverdbe import FedDBE
 from flcore.servers.serveras import FedAS
@@ -107,6 +108,12 @@ def run(args):
             args.model.fc = nn.Identity()
             args.model = BaseHeadSplit(args.model, args.head)
             server = FedAvg(args, i)
+        
+        elif args.algorithm == "FedProx":
+            args.head = copy.deepcopy(args.model.fc)
+            args.model.fc = nn.Identity()
+            args.model = BaseHeadSplit(args.model, args.head)
+            server = FedProx(args, i)
 
         elif args.algorithm == "FedSSI":
             args.head = copy.deepcopy(args.model.fc)

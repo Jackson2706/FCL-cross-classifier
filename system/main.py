@@ -22,7 +22,7 @@ from flcore.servers.servertarget import FedTARGET
 from flcore.servers.serverl2p import FedL2P
 from flcore.servers.serverssi import FedSSI
 from flcore.servers.serverrefedplus import ReFedPlus
-from flcore.servers.ours_v2 import OursV2
+from flcore.servers.server_ourv2 import OursV2
 from flcore.servers.ours import Ours
 from flcore.servers.servercoplay import serverCoplay
 from flcore.servers.serverdgr import serverDGR

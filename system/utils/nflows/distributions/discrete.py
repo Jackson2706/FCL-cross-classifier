@@ -2,7 +2,6 @@
 
 import torch
 from torch.nn import functional as F
-
 from utils.nflows.distributions.base import Distribution
 from utils.nflows.utils import torchutils
 

@@ -1,8 +1,8 @@
 """Various PyTorch utility functions."""
 
-from utils.nflows.utils import typechecks as check
 import numpy as np
 import torch
+from utils.nflows.utils import typechecks as check
 
 
 def tile(x, n):

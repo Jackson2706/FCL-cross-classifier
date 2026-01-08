@@ -1,8 +1,9 @@
-import os
 import json
-import numpy as np
+import os
 from copy import deepcopy
 from itertools import product
+
+import numpy as np
 
 # Base config
 base_config = {

@@ -1,19 +1,17 @@
-import numpy as np
-import time
 import copy
 import statistics
+import time
+
+import numpy as np
 import torch
 import torch.nn as nn
-import copy
+from flcore.clients.clientbase import Client
+from flcore.trainmodel.models import *
+from flcore.utils_core.buffer_utils import ImagePool
+from flcore.utils_core.protonet_utils import OnPro_Loss, ProtoNet_Loss
+from torch.nn.utils import parameters_to_vector, vector_to_parameters
 from torch.optim.lr_scheduler import StepLR
 from utils.model_utils import ParamDict
-from torch.nn.utils import vector_to_parameters, parameters_to_vector
-from flcore.clients.clientbase import Client
-
-from flcore.trainmodel.models import *
-
-from flcore.utils_core.buffer_utils import ImagePool
-from flcore.utils_core.protonet_utils import ProtoNet_Loss, OnPro_Loss
 
 
 class clientSTGM(Client):

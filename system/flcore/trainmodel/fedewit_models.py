@@ -1,15 +1,16 @@
+import math
+import os
+import time
+
+import numpy as np
+import psutil
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
-import numpy as np
-import time
 import torch.nn.init as init
-import math
-import psutil
-import os
-
+import torch.optim as optim
 from flcore.utils_core.fedweit_utils import *
+
 
 class TrainModule:
 
@@ -394,9 +395,10 @@ class NetModule:
         return process.memory_info().rss / 1024 / 1024  # RSS: Resident Set Size in bytes → MB
 
     def init_decomposed_variables(self, initial_weights):
-        import time
-        import psutil
         import os
+        import time
+
+        import psutil
 
         # print("hello")
         self.decomposed_variables['shared'] = [

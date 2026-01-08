@@ -1,6 +1,6 @@
+import operator
 from collections import OrderedDict
 from numbers import Number
-import operator
 
 import numpy as np
 import torch

@@ -2,15 +2,12 @@
 
 import torch
 from torch.nn import functional as F
-
 from utils.nflows.distributions.normal import StandardNormal
 from utils.nflows.flows.base import Flow
 from utils.nflows.nn import nets as nets
 from utils.nflows.transforms.base import CompositeTransform
-from utils.nflows.transforms.coupling import (
-    AdditiveCouplingTransform,
-    AffineCouplingTransform,
-)
+from utils.nflows.transforms.coupling import (AdditiveCouplingTransform,
+                                              AffineCouplingTransform)
 from utils.nflows.transforms.normalization import BatchNorm
 
 

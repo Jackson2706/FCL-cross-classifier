@@ -1,13 +1,14 @@
-import torch.nn as nn
-import torch
-from torchvision import transforms
+import random
+
 import numpy as np
-from torch.nn import functional as F
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from PIL import Image
 from torch.autograd import Variable
-import torch.optim as optim
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
-import random
+from torchvision import transforms
 
 
 def get_one_hot(target, num_class, device):

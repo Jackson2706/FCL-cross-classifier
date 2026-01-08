@@ -1,10 +1,9 @@
 """Implementations of orthogonal transforms."""
 
 import torch
-from torch import nn
-
-from utils.nflows.transforms.base import Transform
 import utils.nflows.utils.typechecks as check
+from torch import nn
+from utils.nflows.transforms.base import Transform
 
 
 class HouseholderSequence(Transform):

@@ -1,16 +1,16 @@
-import time
-import torch
 import copy
+import statistics
+import time
+
+import numpy as np
+import torch
 from flcore.clients.clientl2p import clientL2P
 from flcore.servers.serverbase import Server
-from utils.data_utils import read_client_data_FCL_cifar100, read_client_data_FCL_imagenet1k
-from utils.model_utils import ParamDict
-from torch.nn.utils import vector_to_parameters, parameters_to_vector
-
+from torch.nn.utils import parameters_to_vector, vector_to_parameters
 from torch.optim.lr_scheduler import StepLR
-import numpy as np
-
-import statistics
+from utils.data_utils import (read_client_data_FCL_cifar100,
+                              read_client_data_FCL_imagenet1k)
+from utils.model_utils import ParamDict
 
 
 class FedL2P(Server):

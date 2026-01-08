@@ -1,5 +1,6 @@
-import numpy as np
 import time
+
+import numpy as np
 from flcore.clients.clientbase import Client
 
 
@@ -17,22 +18,19 @@ class clientAVG(Client):
 
         for epoch in range(max_local_epochs):
             for i, (x, y) in enumerate(trainloader):
-                if type(x) == type([]):
-                    x[0] = x[0].to(self.device)
-                else:
-                    x = x.to(self.device)
+                self.optimizer.zero_grad()
+                x = x.to(self.device)
                 y = y.to(self.device)
                 output = self.model(x)
                 loss = self.loss(output, y)
-                self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
+            self.learning_rate_scheduler.step()
 
         if self.args.teval:
             self.grad_eval(old_model=self.model)
 
-        if self.learning_rate_decay:
-            self.learning_rate_scheduler.step()
+        
 
         self.train_time_cost['num_rounds'] += 1
         self.train_time_cost['total_cost'] += time.time() - start_time

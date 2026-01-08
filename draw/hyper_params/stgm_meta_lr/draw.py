@@ -1,6 +1,6 @@
-import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 # Load CSV
 df = pd.read_csv("all4.csv")

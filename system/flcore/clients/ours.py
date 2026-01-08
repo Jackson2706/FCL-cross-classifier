@@ -1,13 +1,14 @@
+import copy
+import time
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-import time
-import copy
-
 import tqdm
 from flcore.clients.clientbase import Client
 from flcore.utils_core.target_utils import Generator
 from torch.utils.data import DataLoader, TensorDataset
+
 
 class clientOurs(Client):
     def __init__(self, args, id, train_data, **kwargs):

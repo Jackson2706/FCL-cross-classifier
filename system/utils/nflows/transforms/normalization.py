@@ -1,11 +1,10 @@
 """Implementation of normalization-based transforms."""
 import numpy as np
 import torch
+import utils.nflows.utils.typechecks as check
 from torch import nn
 from torch.nn import functional as F
-
 from utils.nflows.transforms.base import InverseNotAvailable, Transform
-import utils.nflows.utils.typechecks as check
 
 # class BatchNorm(Transform):
 #     """Transform that performs batch normalization.

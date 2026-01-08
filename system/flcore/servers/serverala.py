@@ -1,10 +1,13 @@
+import copy
 import time
+from threading import Thread
+
 import torch
 from flcore.clients.clientala import clientALA
 from flcore.servers.serverbase import Server
-from threading import Thread
-from utils.data_utils import read_client_data_FCL_cifar100, read_client_data_FCL_imagenet1k
-import copy
+from utils.data_utils import (read_client_data_FCL_cifar100,
+                              read_client_data_FCL_imagenet1k)
+
 
 class FedALA(Server):
     def __init__(self, args, times):

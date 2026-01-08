@@ -3,11 +3,12 @@
 # Description: Client-side implementation for Re-Fed+ algorithm
 # ==============================================================================
 
-import numpy as np
+import copy
 import time
+
+import numpy as np
 import torch
 import torch.nn as nn
-import copy
 from flcore.clients.clientbase import Client
 from torch.utils.data import DataLoader, TensorDataset
 

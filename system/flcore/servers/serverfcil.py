@@ -1,17 +1,17 @@
+import copy
 import time
+from threading import Thread
+
+import numpy as np
 import torch
 import torch.nn as nn
-from torchvision import transforms
-import numpy as np
-import copy
-
 from flcore.clients.clientfcil import clientFCIL
 from flcore.servers.serverbase import Server
-from threading import Thread
 from flcore.trainmodel.models import LeNet2, weights_init
 from flcore.utils_core.fcil_utils import Proxy_Data
-from utils.data_utils import read_client_data_FCL_cifar100, read_client_data_FCL_imagenet1k
-from utils.data_utils import get_unique_tasks
+from torchvision import transforms
+from utils.data_utils import (get_unique_tasks, read_client_data_FCL_cifar100,
+                              read_client_data_FCL_imagenet1k)
 
 
 class FedFCIL(Server):

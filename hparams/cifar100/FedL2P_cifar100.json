@@ -8,7 +8,7 @@
     "device_id": "0",
     "dataset": "CIFAR100",
     "num_classes": 100,
-    "model": "VitL2P",
+    "model": "ResNet18",
     "batch_size": 128,
     "local_learning_rate": 0.01,
     "learning_rate_decay": false,

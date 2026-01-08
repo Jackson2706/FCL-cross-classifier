@@ -1,20 +1,18 @@
 import copy
-import torch
-import torch.nn as nn
-import numpy as np
+import random
 import time
 
-from flcore.clients.clientbase import Client
-from flcore.utils_core.fcil_utils import entropy, get_one_hot
-from flcore.trainmodel.models import LeNet2, weights_init
-
+import numpy as np
+import torch
+import torch.nn as nn
 import torch.optim as optim
-from torch.nn import functional as F
-from torch.autograd import Variable
-from torchvision import transforms
-
+from flcore.clients.clientbase import Client
+from flcore.trainmodel.models import LeNet2, weights_init
+from flcore.utils_core.fcil_utils import entropy, get_one_hot
 from PIL import Image
-import random
+from torch.autograd import Variable
+from torch.nn import functional as F
+from torchvision import transforms
 
 
 class clientFCIL(Client):

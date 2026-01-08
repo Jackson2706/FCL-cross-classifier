@@ -1,19 +1,24 @@
-import numpy as np
-import torch
-from torch import nn
-from tqdm import tqdm
-from torch.nn import functional as F
-from torch.utils.data import DataLoader
-import copy, wandb
-import torch.nn.functional as F
-from torch.autograd import Variable
-from torchvision import transforms
-from kornia import augmentation
-import time, os, math
-import torch.nn.init as init
-from PIL import Image
+import copy
+import math
+import os
 import pickle
 import shutil
+import time
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+import torch.nn.init as init
+from kornia import augmentation
+from PIL import Image
+from torch import nn
+from torch.autograd import Variable
+from torch.nn import functional as F
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from tqdm import tqdm
+
+import wandb
 
 
 class Buffer(nn.Module):
@@ -76,8 +81,8 @@ class Buffer(nn.Module):
         return self.is_valid[:self.current_index]
 
     def display(self, gen=None, epoch=-1):
-        from torchvision.utils import save_image
         from PIL import Image
+        from torchvision.utils import save_image
 
         if 'cifar' in self.args.dataset:
             shp = (-1, 3, 32, 32)
@@ -160,8 +165,8 @@ class Buffer(nn.Module):
         return self.is_valid[:self.current_index]
 
     def display(self, gen=None, epoch=-1):
-        from torchvision.utils import save_image
         from PIL import Image
+        from torchvision.utils import save_image
 
         if 'cifar' in self.args.dataset:
             shp = (-1, 3, 32, 32)
@@ -322,8 +327,8 @@ class Buffer(nn.Module):
         return self.is_valid[:self.current_index]
 
     def display(self, gen=None, epoch=-1):
-        from torchvision.utils import save_image
         from PIL import Image
+        from torchvision.utils import save_image
 
         if 'cifar' in self.args.dataset:
             shp = (-1, 3, 32, 32)

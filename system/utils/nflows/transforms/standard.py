@@ -1,11 +1,10 @@
 """Implementations of some standard transforms."""
 
-from typing import Iterable, Optional, Tuple, Union
 import warnings
+from typing import Iterable, Optional, Tuple, Union
 
 import torch
 from torch import Tensor
-
 from utils.nflows.transforms.base import Transform
 
 

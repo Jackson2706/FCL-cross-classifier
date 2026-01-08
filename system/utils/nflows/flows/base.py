@@ -1,12 +1,11 @@
 """Basic definitions for the flows module."""
 
 
-import torch.nn
+from inspect import signature
 
+import torch.nn
 from utils.nflows.distributions.base import Distribution
 from utils.nflows.utils import torchutils
-
-from inspect import signature
 
 
 class Flow(Distribution):

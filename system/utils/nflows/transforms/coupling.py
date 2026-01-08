@@ -4,17 +4,13 @@ import warnings
 import numpy as np
 import torch
 from torch.nn.functional import softplus
-
 from utils.nflows.transforms import splines
 from utils.nflows.transforms.base import Transform
 from utils.nflows.transforms.nonlinearities import (
-    PiecewiseCubicCDF,
-    PiecewiseLinearCDF,
-    PiecewiseQuadraticCDF,
-    PiecewiseRationalQuadraticCDF,
-)
-from utils.nflows.utils import torchutils
+    PiecewiseCubicCDF, PiecewiseLinearCDF, PiecewiseQuadraticCDF,
+    PiecewiseRationalQuadraticCDF)
 from utils.nflows.transforms.UMNN import *
+from utils.nflows.utils import torchutils
 
 
 class CouplingTransform(Transform):

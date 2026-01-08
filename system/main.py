@@ -1,45 +1,45 @@
+import argparse
+import copy
+import json
 import os
 import sys
-import copy
-import torch
-import argparse
 import time
 import warnings
-import numpy as np
-import torchvision
-import json
-import wandb
 from argparse import Namespace
 from types import SimpleNamespace
 
-from flcore.servers.serveravg import FedAvg
-from flcore.servers.serverfedprox import FedProx
-from flcore.servers.serverala import FedALA
-from flcore.servers.serverdbe import FedDBE
-from flcore.servers.serveras import FedAS
-from flcore.servers.serverweit import FedWeIT
-from flcore.servers.serveraffcl import FedAFFCL
-from flcore.servers.servertarget import FedTARGET
-from flcore.servers.serverl2p import FedL2P
-from flcore.servers.serverssi import FedSSI
-from flcore.servers.serverrefedplus import ReFedPlus
-from flcore.servers.server_ourv2 import OursV2
+import numpy as np
+import torch
+import torchvision
 from flcore.servers.ours import Ours
+from flcore.servers.server_ourv2 import OursV2
+from flcore.servers.serveraffcl import FedAFFCL
+from flcore.servers.serverala import FedALA
+from flcore.servers.serveras import FedAS
+from flcore.servers.serveravg import FedAvg
 from flcore.servers.servercoplay import serverCoplay
+from flcore.servers.serverdbe import FedDBE
 from flcore.servers.serverdgr import serverDGR
-from flcore.servers.serverfedcil import serverFedCIL
-from flcore.trainmodel.models import *
-
-from flcore.trainmodel.AFFCL_models import AFFCLModel
-from flcore.servers.serverstgm import FedSTGM
 from flcore.servers.serverfcil import FedFCIL
-
-from flcore.trainmodel.bilstm import *
+from flcore.servers.serverfedcil import serverFedCIL
+from flcore.servers.serverfednova import FedNova
+from flcore.servers.serverfedprox import FedProx
+from flcore.servers.serverl2p import FedL2P
+from flcore.servers.serverrefedplus import ReFedPlus
+from flcore.servers.serverssi import FedSSI
+from flcore.servers.serverstgm import FedSTGM
+from flcore.servers.servertarget import FedTARGET
+from flcore.servers.serverweit import FedWeIT
+from flcore.trainmodel.AFFCL_models import AFFCLModel
 from flcore.trainmodel.alexnet import *
+from flcore.trainmodel.bilstm import *
 from flcore.trainmodel.mobilenet_v2 import *
+from flcore.trainmodel.models import *
 from flcore.trainmodel.transformer import *
 from flcore.trainmodel.vit_prompt_l2p import *
 
+import wandb
+from system.flcore.servers.severLander import LANDERServer
 
 warnings.simplefilter("ignore")
 torch.manual_seed(0)
@@ -114,7 +114,13 @@ def run(args):
             args.model.fc = nn.Identity()
             args.model = BaseHeadSplit(args.model, args.head)
             server = FedProx(args, i)
-
+        
+        elif args.algorithm == "FedNova":
+            args.head = copy.deepcopy(args.model.fc)
+            args.model.fc = nn.Identity()
+            args.model = BaseHeadSplit(args.model, args.head)
+            server = FedNova(args, i)
+            
         elif args.algorithm == "FedSSI":
             args.head = copy.deepcopy(args.model.fc)
             args.model.fc = nn.Identity()
@@ -175,6 +181,12 @@ def run(args):
             args.model.fc = nn.Identity()
             args.model = BaseHeadSplit(args.model, args.head)
             server = FedL2P(args, i)
+        
+        elif args.algorithm == "LANDER":
+            args.head = copy.deepcopy(args.model.fc)
+            args.model.fc = nn.Identity()
+            args.model = BaseHeadSplit(args.model, args.head)
+            server = LANDERServer(args, i)
         elif args.algorithm == "Ours":
             args.head = copy.deepcopy(args.model.fc)
             args.model.fc = nn.Identity()

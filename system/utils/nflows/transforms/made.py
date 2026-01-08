@@ -5,7 +5,6 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn import init
-
 from utils.nflows.utils import torchutils
 
 

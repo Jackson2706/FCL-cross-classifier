@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def generate_unique_permutations_flat(client_num=100, classes=10, duplicate=20, seed=None):
     if seed is not None:
         np.random.seed(seed)

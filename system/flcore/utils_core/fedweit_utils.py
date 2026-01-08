@@ -1,11 +1,12 @@
+import json
 import os
 import pdb
-import json
 import random
 import threading
+from datetime import datetime
+
 import numpy as np
 
-from datetime import datetime
 
 def random_shuffle(seed, _list):
     random.seed(seed)

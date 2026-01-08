@@ -2,13 +2,12 @@
 
 import numpy as np
 import torch
+import utils.nflows.utils.typechecks as check
 from torch import nn
 from torch.nn import functional as F
 from torch.nn import init
-
 from utils.nflows.transforms.base import Transform
 from utils.nflows.utils import torchutils
-import utils.nflows.utils.typechecks as check
 
 
 class LinearCache:

@@ -1,12 +1,14 @@
+import copy
+import statistics
 import time
+from threading import Thread
+
 import torch
 from flcore.clients.clientdbe import clientDBE
 from flcore.servers.serverbase import Server
-from utils.data_utils import read_client_data_FCL_cifar100, read_client_data_FCL_imagenet1k
-from threading import Thread
+from utils.data_utils import (read_client_data_FCL_cifar100,
+                              read_client_data_FCL_imagenet1k)
 
-import statistics
-import copy
 
 class FedDBE(Server):
     def __init__(self, args, times):

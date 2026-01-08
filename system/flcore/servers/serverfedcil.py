@@ -9,21 +9,22 @@ Handles:
 - Task-incremental federated learning
 """
 
+import copy
+import os
 import time
 from copy import deepcopy
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import copy
-import numpy as np
-import os
-from torchvision.utils import save_image
-from flcore.servers.serverbase import Server
 from flcore.clients.clientfedcil import clientFedCIL
+from flcore.servers.serverbase import Server
 from flcore.trainmodel.FedCIL_models import WGAN
+from torchvision.utils import save_image
 from utils.data_utils import *
 from utils.model_utils import ParamDict
+
 
 class serverFedCIL(Server):
     """

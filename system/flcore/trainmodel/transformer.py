@@ -16,9 +16,10 @@
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 import math
+
 import torch
+from torch import Tensor, nn
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
-from torch import nn, Tensor
 
 
 # https://pytorch.org/tutorials/beginner/transformer_tutorial.html

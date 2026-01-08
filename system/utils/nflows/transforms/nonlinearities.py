@@ -4,14 +4,10 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
-
 from utils.nflows.transforms import splines
-from utils.nflows.transforms.base import (
-    CompositeTransform,
-    InputOutsideDomain,
-    InverseTransform,
-    Transform,
-)
+from utils.nflows.transforms.base import (CompositeTransform,
+                                          InputOutsideDomain, InverseTransform,
+                                          Transform)
 from utils.nflows.utils import torchutils
 
 

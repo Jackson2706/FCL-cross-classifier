@@ -1,19 +1,21 @@
-import os
+import copy
+import csv
 import json
+import os
+import random
 import shutil
+import statistics
+import time
+from datetime import datetime
+
+import numpy as np
 import torch
 import torch.nn.functional as F
-import wandb
-import numpy as np
-import csv
-import copy
-import time
-import random
-from datetime import datetime
-from utils.data_utils import *
 from flcore.metrics.average_forgetting import metric_average_forgetting
+from utils.data_utils import *
 
-import statistics
+import wandb
+
 
 class Server(object):
     def __init__(self, args, times):

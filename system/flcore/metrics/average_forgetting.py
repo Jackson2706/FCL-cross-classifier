@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def metric_average_forgetting(task, accuracy_matrix):
     result = 0
     F_list = []

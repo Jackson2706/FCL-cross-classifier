@@ -15,7 +15,7 @@
     "learning_rate_decay_gamma": 0.99,
     "global_rounds": 50,
     "local_epochs": 5,
-    "algorithm": "FedAvg",
+    "algorithm": "FedNova",
     "join_ratio": 1.0,
     "random_join_ratio": false,
     "num_clients": 10,

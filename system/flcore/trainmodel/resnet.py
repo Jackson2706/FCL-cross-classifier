@@ -1,8 +1,8 @@
+import math
+
 import torch
 import torch.nn as nn
-import math
 import torch.utils.model_zoo as model_zoo
-
 
 __all__ = ['ResNet', 'resnet18_cbam', 'resnet34_cbam', 'resnet50_cbam', 'resnet101_cbam',
            'resnet152_cbam']

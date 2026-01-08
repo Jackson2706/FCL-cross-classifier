@@ -1,9 +1,8 @@
 import torch
+import utils.nflows.utils as utils
 from torch import nn
 from torch.nn import functional as F
 from torch.nn import init
-
-import utils.nflows.utils as utils
 
 
 class ResidualBlock(nn.Module):

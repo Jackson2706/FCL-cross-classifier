@@ -1,14 +1,14 @@
-from functools import reduce
-import torch
-from torch import nn, autograd
-from torch.autograd import Variable
 import os
 import os.path
-import numpy as np
-from torch.nn import functional as F
-import torchvision
+from functools import reduce
 
+import numpy as np
+import torch
+import torchvision
 from flcore.trainmodel import FedCIL_generator
+from torch import autograd, nn
+from torch.autograd import Variable
+from torch.nn import functional as F
 
 EPSILON = 1e-16
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

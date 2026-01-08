@@ -1,12 +1,13 @@
-import torch
-import torch.nn as nn
-import glog as logger
-import numpy as np
-import wandb
 import copy
 
+import glog as logger
+import numpy as np
+import torch
+import torch.nn as nn
 from flcore.clients.clientbase import Client
-from flcore.utils_core.AFFCL_utils import str_in_list, Meter
+from flcore.utils_core.AFFCL_utils import Meter, str_in_list
+
+import wandb
 
 eps = 1e-30
 

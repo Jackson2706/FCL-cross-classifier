@@ -1,10 +1,9 @@
 """Basic definitions for the distributions module."""
 
 import torch
-from torch import nn
-
-from utils.nflows.utils import torchutils
 import utils.nflows.utils.typechecks as check
+from torch import nn
+from utils.nflows.utils import torchutils
 
 
 class NoMeanException(Exception):

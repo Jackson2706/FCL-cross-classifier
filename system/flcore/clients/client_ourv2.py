@@ -1,8 +1,10 @@
-import torch
-from torch.utils.data import Dataset, DataLoader
-from flcore.clients.clientbase import Client
-import time
 import copy
+import time
+
+import torch
+from flcore.clients.clientbase import Client
+from torch.utils.data import DataLoader, Dataset
+
 
 class ReplayDataset(Dataset):
     def __init__(self, real_dataset, syn_images, syn_labels):
@@ -56,6 +58,7 @@ class clientOursV2(Client):
                 loss = self.loss(self.model(x), y)
                 loss.backward()
                 self.optimizer.step()
+            self.learning_rate_scheduler.step()
         
         self.train_time_cost['num_rounds'] += 1
         self.train_time_cost['total_cost'] += time.time() - start_time

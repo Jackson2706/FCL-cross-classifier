@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 from torch.nn import functional as F
-
 from utils.nflows.transforms.base import InputOutsideDomain
 from utils.nflows.utils import torchutils
 

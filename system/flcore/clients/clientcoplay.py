@@ -1,9 +1,10 @@
+import copy
+import time
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-import time
-import copy
 from flcore.clients.clientbase import Client
 
 
@@ -111,9 +112,6 @@ class clientCoplay(Client):
         Returns:
             Generated images and their labels
         """
-        if not self.generator or not self.replay_enabled:
-            return None, None
-
         self.generator.eval()
 
         if task_classes is None:
@@ -123,8 +121,6 @@ class clientCoplay(Client):
                 if task_id in self.task_classes:
                     all_previous_classes.extend(self.task_classes[task_id])
 
-            if not all_previous_classes:
-                return None, None
 
             task_classes = all_previous_classes
 
@@ -153,7 +149,7 @@ class clientCoplay(Client):
             generated_labels = torch.cat(generated_labels, dim=0)
             return generated_images, generated_labels
 
-        return None, None
+        # return None, None
 
     def get_replayed_predictions(self, generated_images):
         """

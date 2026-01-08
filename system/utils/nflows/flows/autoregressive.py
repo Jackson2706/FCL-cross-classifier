@@ -1,13 +1,14 @@
 """Implementations of autoregressive flows."""
 
 from torch.nn import functional as F
-
 from utils.nflows.distributions.normal import StandardNormal
 from utils.nflows.flows.base import Flow
-from utils.nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
+from utils.nflows.transforms.autoregressive import \
+    MaskedAffineAutoregressiveTransform
 from utils.nflows.transforms.base import CompositeTransform
 from utils.nflows.transforms.normalization import BatchNorm
-from utils.nflows.transforms.permutations import RandomPermutation, ReversePermutation
+from utils.nflows.transforms.permutations import (RandomPermutation,
+                                                  ReversePermutation)
 
 
 class MaskedAutoregressiveFlow(Flow):

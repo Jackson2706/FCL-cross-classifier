@@ -1,35 +1,35 @@
-import time
-import torch
 import copy
+import math
+import os
+import shutil
+import statistics
+import time
+from abc import ABC
+from copy import deepcopy
+from typing import List
+
+import numpy as np
+import torch
+import torch.nn.init as init
+import torch.utils
+import torch.utils.data
 from flcore.clients.clienttarget import clientTARGET
 from flcore.servers.serverbase import Server
 from flcore.utils_core.target_utils import *
-from utils.data_utils import read_client_data_FCL_cifar100, read_client_data_FCL_imagenet1k
-from utils.model_utils import ParamDict
-from torch.nn.utils import vector_to_parameters, parameters_to_vector
-
-from torch.optim.lr_scheduler import StepLR
-import numpy as np
-
-import statistics
-
-from torch import nn
-from torch.nn import functional as F
-import torch.utils
-from torch.utils.data import DataLoader
-import torch.utils.data
-from typing import List
-from torch.func import functional_call
-from copy import deepcopy
-
-from tqdm import tqdm
-from torchvision import transforms
-import time, os, math
-import torch.nn.init as init
 from PIL import Image
+from torch import nn
 from torch.autograd import Variable
-from abc import ABC
-import shutil
+from torch.func import functional_call
+from torch.nn import functional as F
+from torch.nn.utils import parameters_to_vector, vector_to_parameters
+from torch.optim.lr_scheduler import StepLR
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from tqdm import tqdm
+from utils.data_utils import (read_client_data_FCL_cifar100,
+                              read_client_data_FCL_imagenet1k)
+from utils.model_utils import ParamDict
+
 
 class FedTARGET(Server):
     def __init__(self, args, times):

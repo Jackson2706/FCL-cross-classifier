@@ -1,8 +1,10 @@
-import torch
-import numpy as np
-import time
 import copy
+import time
+
+import numpy as np
+import torch
 from flcore.clients.clientbase import Client
+
 
 class clientProx(Client):
     def __init__(self, args, id, train_data, **kwargs):

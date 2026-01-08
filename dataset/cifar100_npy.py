@@ -1,9 +1,10 @@
 import os
+import shutil
+
 import numpy as np
 import torch
 import torchvision
 import torchvision.transforms as transforms
-import shutil
 
 # Download CIFAR-100 dataset
 transform = transforms.ToTensor()

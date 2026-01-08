@@ -1,10 +1,12 @@
+import copy
+import random
+from typing import List, Tuple
+
 import numpy as np
 import torch
 import torch.nn as nn
-import copy
-import random
 from torch.utils.data import DataLoader, Subset
-from typing import List, Tuple
+
 
 class ALA:
     def __init__(self,

@@ -1,15 +1,14 @@
 import copy
+import os
+import statistics
+
+import joblib
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-import statistics
+from flcore.trainmodel.models import *
 from torch.utils.data import DataLoader
 from utils.data_utils import *
-
-from flcore.trainmodel.models import *
-
-import os
-import joblib
 
 
 class Client(object):

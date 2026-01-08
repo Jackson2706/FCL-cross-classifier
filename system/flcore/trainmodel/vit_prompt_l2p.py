@@ -1,18 +1,16 @@
-import torch
-import torch.nn as nn
-import timm
-from flcore.trainmodel.models import BaseNetwork
-import torchvision.transforms as transforms
-from timm.models.layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_normal_
-from timm.models.helpers import (
-    build_model_with_cfg,
-    resolve_pretrained_cfg,
-    named_apply,
-    adapt_input_conv,
-    checkpoint_seq,
-)
 from collections import OrderedDict
 from functools import partial
+
+import timm
+import torch
+import torch.nn as nn
+import torchvision.transforms as transforms
+from flcore.trainmodel.models import BaseNetwork
+from timm.models.helpers import (adapt_input_conv, build_model_with_cfg,
+                                 checkpoint_seq, named_apply,
+                                 resolve_pretrained_cfg)
+from timm.models.layers import (DropPath, Mlp, PatchEmbed, lecun_normal_,
+                                trunc_normal_)
 
 # import lifelong_methods.methods.l2p_utils.vit_prompt
 

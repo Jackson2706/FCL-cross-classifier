@@ -1,11 +1,12 @@
+import gc
 import os
 import pickle
 import time
 from typing import Any
+
 import numpy as np
 import torch
 import torch.utils.data as data
-import gc
 import torchvision.transforms as transforms
 
 img_size = 32

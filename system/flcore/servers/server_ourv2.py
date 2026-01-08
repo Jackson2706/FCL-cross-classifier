@@ -1,15 +1,18 @@
+import copy
+import os
 import time
+
+import numpy as np
 import torch
 import torch.nn.functional as F
-import copy
-import numpy as np
-import os
-from torch import nn, optim
-from torchvision.utils import save_image
-from flcore.servers.serverbase import Server
 from flcore.clients.client_ourv2 import clientOursV2
+from flcore.servers.serverbase import Server
+from torch import nn, optim
 from torch.nn.utils import spectral_norm
-from utils.data_utils import read_client_data_FCL_cifar100, read_client_data_FCL_imagenet1k, read_client_data_FCL_cifar10
+from torchvision.utils import save_image
+from utils.data_utils import (read_client_data_FCL_cifar10,
+                              read_client_data_FCL_cifar100,
+                              read_client_data_FCL_imagenet1k)
 
 
 class BNFeatureHook:
@@ -131,6 +134,7 @@ class OursV2(Server):
                     client.train(task=task)
                 self.receive_models()
                 self.aggregate_parameters()
+                self.send_models()
                 self.eval(task=task, glob_iter=i + task*self.global_rounds, flag="global")
 
             self.train_global_generator()

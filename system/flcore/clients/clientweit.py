@@ -183,10 +183,10 @@ class clientWeIT(Client):
         #     'capacity': self.train.get_capacity(),
         #     'communication': self.train.get_communication()
         # })
-        self.save_state()
+        # self.save_state()
         
-        if selected:
-            return self.get_weights(), self.get_train_size()
+        # if selected:
+        #     return self.get_weights(), self.get_train_size()
 
     def loss(self, y_true, y_pred):
         weight_decay, sparseness, approx_loss = 0, 0, 0

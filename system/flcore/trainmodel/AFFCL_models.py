@@ -73,6 +73,15 @@ class AFFCLModel(nn.Module):
             if self.algorithm=='PreciseFCL':
                 self.flow = self.get_1d_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
                                                 num_layers=4)
+        
+        elif dataset=='CIFAR10':
+            self.xa_shape=[512]
+            self.num_classes = 10
+            self.classifier = Resnet_plus(32, xa_dim=int(np.prod(self.xa_shape)), num_classes=self.num_classes)
+            # self.classifier = S_ConvNet(32, 3, c_channel_size, xa_dim=int(np.prod(self.xa_shape)), num_classes=self.num_classes)
+            if self.algorithm=='PreciseFCL':
+                self.flow = self.get_1d_nflow_model(feature_dim=int(np.prod(self.xa_shape)), hidden_feature=512, context_feature=self.num_classes,
+                                                num_layers=4)
 
         elif dataset=='IMAGENET1k':
             self.xa_shape=[512]

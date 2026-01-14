@@ -193,7 +193,7 @@ class Client(object):
         elif self.args.dataset == 'CIFAR10':
             train_data = read_client_data_FCL_cifar10(self.id, task=task, classes_per_task=self.args.cpt, count_labels=False, train=True)
         
-        return DataLoader(train_data, batch_size, drop_last=True, shuffle=True)
+        return DataLoader(train_data, batch_size=batch_size, shuffle=True, drop_last=True)
 
     def load_test_data(self, task, batch_size=None):
         if batch_size == None:

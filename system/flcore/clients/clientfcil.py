@@ -56,7 +56,6 @@ class clientFCIL(Client):
 
         max_local_epochs = self.local_epochs
 
-        opt = optim.SGD(self.model.parameters(), lr=self.learning_rate, weight_decay=0.00001)
 
         # print(model_old)
         if model_old[1] != None:
@@ -74,31 +73,14 @@ class clientFCIL(Client):
 
         for epoch in range(max_local_epochs):
             loss_cur_sum, loss_mmd_sum = [], []
-            if (epoch + ep_g * 20) % 200 == 100:
-                if self.num_classes == self.task_size:
-                    opt = optim.SGD(self.model.parameters(), lr=self.learning_rate / 25, weight_decay=0.00001)
-                else:
-                    for p in opt.param_groups:
-                        p['lr'] = self.learning_rate / 5
-            elif (epoch + ep_g * 20) % 200 == 150:
-                if self.num_classes > self.task_size:
-                    for p in opt.param_groups:
-                        p['lr'] = self.learning_rate / 25
-                else:
-                    opt = optim.SGD(self.model.parameters(), lr=self.learning_rate / 25, weight_decay=0.00001)
-            elif (epoch + ep_g * 20) % 200 == 180:
-                if self.num_classes == self.task_size:
-                    opt = optim.SGD(self.model.parameters(), lr=self.learning_rate / 125, weight_decay=0.00001)
-                else:
-                    for p in opt.param_groups:
-                        p['lr'] = self.learning_rate / 125
             for step, (images, target) in enumerate(self.train_loader):
                 images, target = images.cuda(self.device), target.cuda(self.device)
                 loss_value = self._compute_loss(images, target)
-                opt.zero_grad()
+                self.optimizer.zero_grad()
                 loss_value.backward()
-                opt.step()
-
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                self.optimizer.step()
+            self.learning_rate_scheduler.step()
         self.train_time_cost['num_rounds'] += 1
         self.train_time_cost['total_cost'] += time.time() - start_time
 
@@ -233,7 +215,8 @@ class clientFCIL(Client):
 
             target = get_one_hot(label, self.num_classes, self.device)
 
-            opt = optim.SGD([data, ], lr=self.learning_rate / 10, weight_decay=0.00001)
+            opt = optim.Adam([data, ], lr=self.learning_rate / 10, weight_decay=0.00001)
+            scheduler = optim.lr_scheduler.StepLR(opt, step_size=20, gamma=0.1)
             proto_model = copy.deepcopy(self.model)
 
             for ep in range(iters):
@@ -242,7 +225,7 @@ class clientFCIL(Client):
                 opt.zero_grad()
                 loss_cls.backward()
                 opt.step()
-
+            scheduler.step()
             data = data.detach().clone().to(self.device).requires_grad_(False)
             outputs = self.encode_model(data)
 

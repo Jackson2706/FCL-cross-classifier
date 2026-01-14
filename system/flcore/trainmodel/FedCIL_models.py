@@ -216,15 +216,18 @@ class WGAN(nn.Module):
         # updation
         self.critic_optimizer.zero_grad()
         c_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
         self.critic_optimizer.step()
-
+        self.critic_scheduler.step()
         # =============== update G ==============
         self.generator_optimizer.zero_grad()
 
         # 1. AC-GAN loss:
         g_loss, g_logits = self._g_loss(x, y, classes_so_far)
         g_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.generator.parameters(), 1.0)
         self.generator_optimizer.step()
+        self.generator_scheduler.step()
         return {'c_loss': c_loss.item(), 'g_loss': g_loss.item(), 'aux_f': aux[0].item(), 'aux_r': aux[1].item(),
                 'features': aux[2], }
 
@@ -237,9 +240,11 @@ class WGAN(nn.Module):
 
     def set_generator_optimizer(self, optimizer):
         self.generator_optimizer = optimizer
+        self.generator_scheduler = torch.optim.lr_scheduler.StepLR(self.generator_optimizer, step_size=10, gamma=0.9)
 
     def set_critic_optimizer(self, optimizer):
         self.critic_optimizer = optimizer
+        self.critic_scheduler = torch.optim.lr_scheduler.StepLR(self.critic_optimizer, step_size=10, gamma=0.9)
 
     def set_critic_updates_per_generator_update(self, k):
         self.critic_updates_per_generator_update = k
@@ -271,7 +276,7 @@ class WGAN(nn.Module):
         # data transform
         y_hot = torch.nn.functional.one_hot(y.to(torch.int64), self.num_classes).float()
         embed = self.critic.linear2(feature)
-        embed = F.normalize(embed, dim=1)
+        embed = F.normalize(embed, p=2, dim=1, eps=1e-8)
         proxy = self.critic.embedding(y_hot)
         proxy = F.normalize(proxy, dim=1)
         label = y
@@ -356,41 +361,34 @@ class WGAN(nn.Module):
         return noise, aux_label, dis_label
 
     def _g_loss(self, x, y, classes_so_far, return_g=False):
-
-        # info
         batch_size = x.size(0)
-
-        # generate noise, aux_label is labeled FALSE
         noise, aux_label, _ = self.generate_noise_with_classes(batch_size=batch_size, classes_so_far=classes_so_far)
 
-        # prepare new dis_label:
-        dis_label = torch.FloatTensor(batch_size)
-        dis_label = dis_label.to(torch.device('cuda:0'))
+        dis_label = torch.FloatTensor(batch_size).to(torch.device('cuda:0'))
+        dis_label.fill_(1)
         dis_label = Variable(dis_label)
-        dis_label.data.fill_(1)
 
         fake = self.generator(noise.to(torch.device('cuda:0')))
 
+        # Get logits (3rd return value) if possible, otherwise use clamp
         dis_output, aux_output, logits = self.critic(fake)
 
-        # print('g_loss_dis_output: ' + str(dis_output))
-        # print('g_loss_dis_label: ' + str(dis_label))
-        # print('g_loss_noise: ' + str(noise))
-        # print('g_loss_aux_label: ' + str(aux_label))
-
-        # NLLL loss
-        # aux_output = torch.log(aux_output)
-
+        # FIX 1: Clamp BCELoss input
+        epsilon = 1e-8
+        dis_output = torch.clamp(dis_output, epsilon, 1.0 - epsilon)
         dis_errG = self.dis_criterion(dis_output, dis_label)
-        aux_errG = self.aux_criterion(torch.log(aux_output), aux_label)
+
+        # FIX 2: Add Epsilon to Log or use Logits
+        # Option A: Quick fix (Keep NLLLoss)
+        aux_errG = self.aux_criterion(torch.log(aux_output + epsilon), aux_label)
+        
+        # Option B: Better fix (Switch self.aux_criterion to CrossEntropyLoss in __init__)
+        # aux_errG = self.aux_criterion(logits, aux_label)
 
         loss_g = dis_errG + aux_errG
 
-        # print('g_loss_aux_output: ' + str(aux_output))
-        # print('g_loss_aux_errG: ' + str(aux_errG))
-
         if return_g:
-            return (loss_g, g)
+            return (loss_g, fake) # Typo in your original code: 'g' was undefined, likely meant 'fake'
         else:
             return loss_g, logits
 
@@ -436,9 +434,9 @@ class WGAN(nn.Module):
         # updation
         self.critic_optimizer.zero_grad()
         c_loss.backward()
-        # torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 5)
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 5)
         self.critic_optimizer.step()
-
+        self.critic_scheduler.step()
         return {'c_loss': c_loss.item()}
 
     def train_a_batch_lwf(self,
@@ -503,8 +501,9 @@ class WGAN(nn.Module):
         # updation
         self.critic_optimizer.zero_grad()
         loss_all.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
         self.critic_optimizer.step()
-
+        self.critic_scheduler.step()
         return {'loss_all': loss_all.item()}
 
         # User local training
@@ -595,8 +594,9 @@ class WGAN(nn.Module):
         # updation
         self.critic_optimizer.zero_grad()
         c_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
         self.critic_optimizer.step()
-
+        self.critic_scheduler.step()
         # =============== update G ==============
         self.generator_optimizer.zero_grad()
 
@@ -604,8 +604,9 @@ class WGAN(nn.Module):
         g_loss, g_logits = self._g_loss(x, y, classes_so_far)
 
         g_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.generator.parameters(), 1.0)
         self.generator_optimizer.step()
-
+        self.generator_scheduler.step()
         return {'features': aux[2], 'aux_f': aux[0].item(), 'aux_r': aux[1].item(), 'c_loss': c_loss.item(),
                 'g_loss': g_loss.item(), 'kd_loss_d': kd_loss_d.item() if glob_iter_ != 0 else 0,
                 'kd_loss_g': kd_loss_g.item() if glob_iter_ != 0 else 0}

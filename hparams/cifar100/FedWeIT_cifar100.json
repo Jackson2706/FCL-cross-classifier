@@ -8,12 +8,12 @@
     "device_id": "0",
     "dataset": "CIFAR100",
     "num_classes": 100,
-    "model": "CNN",
+    "model": "ResNet18",
     "batch_size": 64,
     "local_learning_rate": 0.01,
     "learning_rate_decay": false,
     "learning_rate_decay_gamma": 0.99,
-    "global_rounds": 25,
+    "global_rounds": 50,
     "local_epochs": 5,
     "algorithm": "FedWeIT",
     "join_ratio": 1.0,
@@ -29,7 +29,7 @@
 
     "client_drop_rate": 0.0,
     "time_threthold": 10000,
-
+    "partition_options": "hetero",
     "output_path": "output_fedweit/",
     "sparse_comm": true,
     "client_sparsity": 0.3,

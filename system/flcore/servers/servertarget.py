@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
 from utils.data_utils import (read_client_data_FCL_cifar100,
-                              read_client_data_FCL_imagenet1k)
+                              read_client_data_FCL_imagenet1k, read_client_data_FCL_cifar10)
 from utils.model_utils import ParamDict
 
 
@@ -94,6 +94,8 @@ class FedTARGET(Server):
                         train_data, label_info = read_client_data_FCL_imagenet1k(i, task=task, classes_per_task=self.args.cpt, count_labels=True)
                     elif self.args.dataset == 'CIFAR100':
                         train_data, label_info = read_client_data_FCL_cifar100(i, task=task, classes_per_task=self.args.cpt, count_labels=True)
+                    elif self.args.dataset == 'CIFAR10':
+                        train_data, label_info = read_client_data_FCL_cifar10(i, task=task, classes_per_task=self.args.cpt, count_labels=True)
                     else:
                         raise NotImplementedError("Not supported dataset")
 

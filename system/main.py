@@ -39,7 +39,6 @@ from flcore.trainmodel.transformer import *
 from flcore.trainmodel.vit_prompt_l2p import *
 
 import wandb
-from system.flcore.servers.severLander import LANDERServer
 
 warnings.simplefilter("ignore")
 torch.manual_seed(0)
@@ -161,8 +160,8 @@ def run(args):
             args.model = BaseHeadSplit(args.model, args.head)
             server = FedAS(args, i)
 
-        elif args.algorithm == "FedFCIL":
-            server = FedFCIL(args, i)
+        # elif args.algorithm == "FedFCIL":
+        #     server = FedFCIL(args, i)
             
         elif args.algorithm == "FedSTGM":
             args.head = copy.deepcopy(args.model.fc)
@@ -182,16 +181,11 @@ def run(args):
             args.model = BaseHeadSplit(args.model, args.head)
             server = FedL2P(args, i)
         
-        elif args.algorithm == "LANDER":
-            args.head = copy.deepcopy(args.model.fc)
-            args.model.fc = nn.Identity()
-            args.model = BaseHeadSplit(args.model, args.head)
-            server = LANDERServer(args, i)
-        elif args.algorithm == "Ours":
-            args.head = copy.deepcopy(args.model.fc)
-            args.model.fc = nn.Identity()
-            args.model = BaseHeadSplit(args.model, args.head)
-            server = Ours(args, i)
+        # elif args.algorithm == "Ours":
+        #     args.head = copy.deepcopy(args.model.fc)
+        #     args.model.fc = nn.Identity()
+        #     args.model = BaseHeadSplit(args.model, args.head)
+        #     server = Ours(args, i)
         elif args.algorithm == "Ours_v2":
             args.head = copy.deepcopy(args.model.fc)
             args.model.fc = nn.Identity()
@@ -212,6 +206,24 @@ def run(args):
             args.model.fc = nn.Identity()
             args.model = BaseHeadSplit(args.model, args.head)
             server = serverFedCIL(args, i)
+        elif args.algorithm == "GLFC":
+            args.head = copy.deepcopy(args.model.fc)
+            args.model.fc = nn.Identity()
+            args.model = BaseHeadSplit(args.model, args.head)
+            from flcore.servers.serverGLFC import GLFCServer
+            server = GLFCServer(args, i)
+        elif args.algorithm == "MFCL":
+            args.head = copy.deepcopy(args.model.fc)
+            args.model.fc = nn.Identity()
+            args.model = BaseHeadSplit(args.model, args.head)
+            from flcore.servers.serverMLCL import MFCLServer
+            server = MFCLServer(args, i)
+        elif args.algorithm == "FedLwF":
+            args.head = copy.deepcopy(args.model.fc)
+            args.model.fc = nn.Identity()
+            args.model = BaseHeadSplit(args.model, args.head)
+            from flcore.servers.serverFedLwF import FedLwFServer
+            server = FedLwFServer(args, i)
         else:
             print(args.algorithm)
             raise NotImplementedError
@@ -235,7 +247,7 @@ if __name__ == "__main__":
     parser.add_argument('--offlog', type=bool, default=False, help='Save wandb logger')
     parser.add_argument('--log', type=bool, default=False, help='Print logger')
     parser.add_argument('--debug', type=bool, default=False, help='When use Debug, turn off forgetting')
-    parser.add_argument('--cpt', type=int, default=20, help='Class per task')
+    # parser.add_argument('--cpt', type=int, default=20, help='Class per task')
     parser.add_argument('--nt', type=int, default=None, help='Num tasks')
     parser.add_argument('--seval', action='store_true', help='Log Spatio Gradient')
     parser.add_argument('--teval', action='store_true', help='Log Temporal Gradient')
@@ -256,7 +268,7 @@ if __name__ == "__main__":
     cfdct['offlog'] = args.offlog
     cfdct['log'] = args.log
     cfdct['debug'] = args.debug
-    cfdct['cpt'] = args.cpt
+    # cfdct['cpt'] = args.cpt
     cfdct['seval'] = args.seval
     cfdct['teval'] = args.teval
     cfdct['pca_eval'] = args.pca_eval

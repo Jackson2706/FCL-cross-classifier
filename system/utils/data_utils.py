@@ -57,8 +57,7 @@ def read_client_data_FCL_imagenet1k(index, task = 0, classes_per_task = 2, count
         x, y = load_data(datadir, class_order[task*classes_per_task:(task+1)*classes_per_task], train=False)
     x = x.type(torch.FloatTensor)
     y = torch.Tensor(y.type(torch.long))
-    # data = Transform_dataset(x, y, imagenet_train_transform if train else imagenet_test_transform)
-    data = Transform_dataset(x, y)
+    data = Transform_dataset(x, y, imagenet_train_transform if train else imagenet_test_transform)
 
     if count_labels:
         label_info = {}

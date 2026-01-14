@@ -73,7 +73,7 @@ class clientFedCIL(Client):
         self.available_labels = []
 
         # --- Loss Functions ---
-        self.aux_criterion = nn.NLLLoss()
+        self.aux_criterion = nn.CrossEntropyLoss()
         self.ensemble_loss = nn.KLDivLoss(reduction="batchmean")
 
         print(f"[Client {self.id}] FedCIL initialized | nz={self.nz}, num_classes={self.num_classes}")
@@ -286,7 +286,7 @@ class clientFedCIL(Client):
             kd_loss_g_1 = self.ensemble_loss(torch.log(p_local), p_server)
 
             # Classification loss (ensure quality)
-            kd_loss_g_2 = self.aux_criterion(torch.log(p_server), aux_label)
+            kd_loss_g_2 = self.aux_criterion(p_server, aux_label)
 
         kd_loss_g = kd_loss_g_1 + kd_loss_g_2
 
@@ -325,7 +325,7 @@ class clientFedCIL(Client):
         dis_output, aux_output, logits_real = self.local_generator.critic(x)
 
         # Auxiliary classification loss
-        aux_errD_real = self.aux_criterion(torch.log(aux_output), y)
+        aux_errD_real = self.aux_criterion(aux_output, y)
 
         # Generate fake data
         noise, aux_label, _ = self._generate_noise_with_classes(batch_size, classes_so_far)
@@ -333,7 +333,7 @@ class clientFedCIL(Client):
 
         # Fake data
         dis_output_fake, aux_output_fake, logits_fake = self.local_generator.critic(fake.detach())
-        aux_errD_fake = self.aux_criterion(torch.log(aux_output_fake), aux_label)
+        aux_errD_fake = self.aux_criterion(aux_output_fake, aux_label) 
 
         # Combined loss
         loss_c = aux_errD_real + aux_errD_fake
@@ -358,7 +358,7 @@ class clientFedCIL(Client):
         dis_output, aux_output, logits = self.local_generator.critic(fake)
 
         # Auxiliary classification loss
-        aux_errG = self.aux_criterion(torch.log(aux_output), aux_label)
+        aux_errG = self.aux_criterion(aux_output, aux_label)
 
         return aux_errG, logits
 
@@ -429,6 +429,7 @@ class clientFedCIL(Client):
                 loss = criterion(output, y)
                 loss.backward()
                 self.optimizer.step()
+            self.learning_rate_scheduler.step()
 
     def _get_task_classes(self, dataset):
         """Extract unique classes from dataset"""

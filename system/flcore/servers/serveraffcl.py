@@ -7,7 +7,7 @@ import torch
 from flcore.clients.clientaffcl import ClientAFFCL
 from flcore.servers.serverbase import Server
 from utils.data_utils import (read_client_data_FCL_cifar100,
-                              read_client_data_FCL_imagenet1k)
+                              read_client_data_FCL_imagenet1k, read_client_data_FCL_cifar10)
 
 
 class FedAFFCL(Server):
@@ -54,6 +54,8 @@ class FedAFFCL(Server):
                         train_data, label_info = read_client_data_FCL_imagenet1k(i, task=task, classes_per_task=self.args.cpt, count_labels=True)
                     elif self.args.dataset == 'CIFAR100':
                         train_data, label_info = read_client_data_FCL_cifar100(i, task=task, classes_per_task=self.args.cpt, count_labels=True)
+                    elif self.args.dataset == 'CIFAR10':
+                        train_data, label_info = read_client_data_FCL_cifar10(i, task=task, classes_per_task=self.args.cpt, count_labels=True)
                     else:
                         raise NotImplementedError("Not supported dataset")
 
@@ -183,6 +185,8 @@ class FedAFFCL(Server):
                 train_data, label_info = read_client_data_FCL_imagenet1k(i, task=0, classes_per_task=self.args.cpt, count_labels=True)
             elif self.args.dataset == 'CIFAR100':
                 train_data, label_info = read_client_data_FCL_cifar100(i, task=0, classes_per_task=self.args.cpt, count_labels=True)
+            elif self.args.dataset == 'CIFAR10':
+                train_data, label_info = read_client_data_FCL_cifar10(i, task=0, classes_per_task=self.args.cpt, count_labels=True)
             else:
                 raise NotImplementedError("Not supported dataset")
 

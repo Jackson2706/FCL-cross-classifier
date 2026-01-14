@@ -59,7 +59,7 @@ class Critic(nn.Module):
 
         logits = classes
 
-        classes_p = self.softmax(classes)
+        classes_p = logits
         realfake = self.sigmoid(realfake).squeeze()
 
         # return realfake, classes, logits
@@ -128,7 +128,7 @@ class Generator_CIFAR(nn.Module):
         self.nz = z_size
 
         # first linear layer
-        self.fc1 = nn.Linear(110, 384)
+        self.fc1 = nn.Linear(100, 384)
         # Transposed Convolution 2
         self.tconv2 = nn.Sequential(
             nn.ConvTranspose2d(384, 192, 4, 1, 0, bias=False),

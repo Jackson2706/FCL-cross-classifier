@@ -5,7 +5,7 @@ dataset/imagenet1k-classes
 dataset/imagenet1k_224_classes
 dataset/synthetic_data
 dataset/imagenet_resize
-
+draw
 wandb
 test.py
 output_fedweit

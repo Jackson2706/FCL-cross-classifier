@@ -176,7 +176,7 @@ class OursV2(Server):
                 if mask.sum() > 0:
                     valid_t += 1
                     m_idx = torch.tensor(mask, device=self.device)
-                    preds = info["model"].to(self.device)(gen_imgs[m_idx])
+                    preds = info["model"].eval().to(self.device)(gen_imgs[m_idx])
                     total_ce += criterion_ce(preds, labels[m_idx])
                     if mask.sum() >= MIN_BN_SAMPLES: # Check threshold
                         total_bn += self.get_bn_loss(info["model"], gen_imgs[m_idx])

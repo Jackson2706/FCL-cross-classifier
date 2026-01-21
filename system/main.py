@@ -268,7 +268,6 @@ if __name__ == "__main__":
     cfdct['offlog'] = args.offlog
     cfdct['log'] = args.log
     cfdct['debug'] = args.debug
-    # cfdct['cpt'] = args.cpt
     cfdct['seval'] = args.seval
     cfdct['teval'] = args.teval
     cfdct['pca_eval'] = args.pca_eval

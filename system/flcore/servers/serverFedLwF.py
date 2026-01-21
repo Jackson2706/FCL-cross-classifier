@@ -15,7 +15,7 @@ class FedLwFServer(Server):
         """
         FedLwF Main Training Loop.
         """
-        for task in range(self.N_TASKS):
+        for task in range(self.args.num_tasks):
             print(f"\n=== FedLwF Task {task} ===")
             self.current_task = task
             # self._handle_task_transition(task) # Helper from previous implementation logic

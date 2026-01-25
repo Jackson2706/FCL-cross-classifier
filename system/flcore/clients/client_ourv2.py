@@ -3,6 +3,7 @@ import time
 
 import torch
 from flcore.clients.clientbase import Client
+from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -43,23 +44,50 @@ class clientOursV2(Client):
             param.requires_grad = False
 
     def train(self, task=None):
+        # 1. Load data nhẹ nhàng
         train_loader = self.load_train_data(task=task)
         self.real_classes = set(self.current_labels)
         
-        # Augment with synthetic replay
+        # 2. Tạo augmented dataset (Đảm bảo trả về DataLoader, không phải Dataset thô)
+        # Nếu create_augmented_dataset trả về Dataset, hãy bọc nó:
         augmented_loader = self.create_augmented_dataset(train_loader.dataset)
+        augmented_loader = DataLoader(
+            aug_dataset, 
+            batch_size=self.batch_size, 
+            shuffle=True, 
+            num_workers=2, # Tăng tốc độ load data
+            pin_memory=True # Tối ưu hóa chuyển data lên GPU
+        )
         
         self.model.train()
+        self.model.to(self.device)
         start_time = time.time()
+        
+        scaler = GradScaler()
+        
         for epoch in range(self.local_epochs):
-            for batch in augmented_loader:
-                x, y = batch[0].to(self.device), batch[1].to(self.device)
+            for x, y in augmented_loader:
+                x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
+                
+                # Reset gradient TRƯỚC khi forward
                 self.optimizer.zero_grad()
-                loss = self.loss(self.model(x), y)
-                loss.backward()
-                self.optimizer.step()
+                
+                with autocast():
+                    outputs = self.model(x)
+                    loss = self.loss(outputs, y)
+                
+                # Backward & Step với GradScaler
+                scaler.scale(loss).backward()
+                scaler.step(self.optimizer)
+                scaler.update()
+                
+            # Update LR sau mỗi epoch (tùy thuộc vào loại scheduler bạn dùng)
             self.learning_rate_scheduler.step()
         
+        # Giải phóng VRAM sau khi train xong để client khác dùng
+        # self.model.cpu() # Chỉ bật nếu bạn có quá nhiều client và ít VRAM
+        torch.cuda.empty_cache()
+
         self.train_time_cost['num_rounds'] += 1
         self.train_time_cost['total_cost'] += time.time() - start_time
 
@@ -86,4 +114,5 @@ class clientOursV2(Client):
         syn_imgs = torch.cat(all_syn_imgs, dim=0)
         syn_lbls = torch.cat(all_syn_labels, dim=0)
         
-        return DataLoader(ReplayDataset(train_data, syn_imgs, syn_lbls), batch_size=self.batch_size, shuffle=True)
+        return DataLoader(ReplayDataset(train_data, syn_imgs, syn_lbls), batch_size=self.batch_size, shuffle=True, num_workers=2, 
+            pin_memory=True)

@@ -19,12 +19,12 @@ class Client(object):
     def __init__(self, args, id, train_data, **kwargs):
         torch.manual_seed(0)
         self.t_angle_after = 0
+        self.device = args.device
 
-        self.model = copy.deepcopy(args.model)
+        self.model = copy.deepcopy(args.model).to(self.device)
         self.args = args
         self.algorithm = args.algorithm
         self.dataset = args.dataset
-        self.device = args.device
         self.id = id  
 
         self.num_classes = args.num_classes
@@ -33,7 +33,7 @@ class Client(object):
         self.learning_rate = args.local_learning_rate
         self.local_epochs = args.local_epochs
 
-        self.train_source = [image for image, _ in self.train_data]
+        # self.train_source = [image for image, _ in self.train_data]
         self.train_targets = [label for _, label in self.train_data]
 
         # check BatchNorm
@@ -85,7 +85,7 @@ class Client(object):
                 gamma=self.args.learning_rate_decay_gamma
             )
 
-        self.last_copy  = copy.deepcopy(self.model)
+        self.last_copy  = copy.deepcopy(self.model).cpu()
         self.last_copy.to(self.device)
         self.if_last_copy = True
         

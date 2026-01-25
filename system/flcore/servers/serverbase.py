@@ -1,6 +1,6 @@
 import copy
 import csv
-import json
+import gc
 import os
 import random
 import shutil
@@ -60,7 +60,7 @@ class Server(object):
         self.local_accuracy_matrix = []
 
         if self.args.dataset == 'IMAGENET1k':
-            self.N_TASKS = 500
+            self.N_TASKS = 5
         elif self.args.dataset == 'CIFAR100':
             self.N_TASKS = 5
         elif self.args.dataset == 'CIFAR10':
@@ -99,6 +99,8 @@ class Server(object):
             client.current_labels.extend(label_info['labels'])
             client.task_dict[0] = label_info['labels']
             client.file_name = self.file_name
+            del client, train_data, label_info
+            gc.collect()
 
     def select_clients(self):
         if self.random_join_ratio:

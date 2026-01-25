@@ -107,5 +107,4 @@ class clientOursV2(Client):
         syn_imgs = torch.cat(all_syn_imgs, dim=0)
         syn_lbls = torch.cat(all_syn_labels, dim=0)
         
-        return DataLoader(ReplayDataset(train_data, syn_imgs, syn_lbls), batch_size=self.batch_size, shuffle=True, num_workers=2, 
-            pin_memory=True)
+        return DataLoader(ReplayDataset(train_data, syn_imgs, syn_lbls), batch_size=self.batch_size, shuffle=True)

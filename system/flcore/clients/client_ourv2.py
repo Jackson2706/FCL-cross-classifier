@@ -51,14 +51,7 @@ class clientOursV2(Client):
         # 2. Tạo augmented dataset (Đảm bảo trả về DataLoader, không phải Dataset thô)
         # Nếu create_augmented_dataset trả về Dataset, hãy bọc nó:
         augmented_loader = self.create_augmented_dataset(train_loader.dataset)
-        augmented_loader = DataLoader(
-            aug_dataset, 
-            batch_size=self.batch_size, 
-            shuffle=True, 
-            num_workers=2, # Tăng tốc độ load data
-            pin_memory=True # Tối ưu hóa chuyển data lên GPU
-        )
-        
+    
         self.model.train()
         self.model.to(self.device)
         start_time = time.time()

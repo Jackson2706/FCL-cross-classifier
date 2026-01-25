@@ -26,8 +26,9 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
-from utils.data_utils import (read_client_data_FCL_cifar100,
-                              read_client_data_FCL_imagenet1k, read_client_data_FCL_cifar10)
+from utils.data_utils import (read_client_data_FCL_cifar10,
+                              read_client_data_FCL_cifar100,
+                              read_client_data_FCL_imagenet1k)
 from utils.model_utils import ParamDict
 
 

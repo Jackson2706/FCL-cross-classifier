@@ -1,11 +1,13 @@
+import copy
+
+import numpy as np
 import torch
 import torch.nn as nn
-import copy
-import numpy as np
-from flcore.servers.serverbase import Server
-from flcore.clients.clientMFCL import MFCLClient
-from flcore.trainmodel.mfcl_utils import Generator, get_bn_statistics
 import torch.nn.functional as F
+from flcore.clients.clientMFCL import MFCLClient
+from flcore.servers.serverbase import Server
+from flcore.trainmodel.mfcl_utils import Generator, get_bn_statistics
+
 
 class MFCLServer(Server):
     def __init__(self, args, times):

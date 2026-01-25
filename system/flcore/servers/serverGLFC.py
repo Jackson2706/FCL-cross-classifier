@@ -1,11 +1,12 @@
+import copy
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import copy
-import numpy as np
+from flcore.clients.clientGLFC import GLFCClient, GradientEncodingNet
 from flcore.servers.serverbase import Server
-from flcore.clients.clientGLFC import GLFCClient
-from flcore.clients.clientGLFC import GradientEncodingNet
+
 
 class GLFCServer(Server):
     def __init__(self, args, times):

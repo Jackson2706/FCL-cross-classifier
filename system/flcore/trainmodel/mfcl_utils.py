@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class Generator(nn.Module):
     """
     Generator architecture based on Table 2 of the MFCL paper for CIFAR-100.

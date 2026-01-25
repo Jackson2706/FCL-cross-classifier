@@ -1,7 +1,9 @@
-import torch
 import copy
-from flcore.servers.serverbase import Server
+
+import torch
 from flcore.clients.clientFedLwF import FedLwFClient
+from flcore.servers.serverbase import Server
+
 
 class FedLwFServer(Server):
     def __init__(self, args, times):

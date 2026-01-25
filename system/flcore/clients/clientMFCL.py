@@ -1,7 +1,8 @@
+import copy
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F # Cần thêm cái này nếu chưa có
-import copy
+import torch.nn.functional as F  # Cần thêm cái này nếu chưa có
 from flcore.clients.clientbase import Client
 
 

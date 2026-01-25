@@ -26,7 +26,7 @@
     "prev": 0,
     "times": 1,
 
-    "global_rounds": 50,
+    "global_rounds": 200,
     "local_epochs": 5,
     "eval_gap": 1,
     "time_threthold": 10000,
@@ -35,7 +35,7 @@
     "cpt": 2,
 
     "g_lr": 0.01,
-    "g_steps": 200,
+    "g_steps": 2000,
     "replay_weight": 25,
     "nz": 256,
     "latent_dim": 256,

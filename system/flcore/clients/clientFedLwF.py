@@ -1,8 +1,10 @@
+import copy
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import copy
 from flcore.clients.clientbase import Client
+
 
 class FedLwFClient(Client):
     def __init__(self, args, id, train_data, **kwargs):

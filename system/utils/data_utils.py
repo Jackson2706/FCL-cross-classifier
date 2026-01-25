@@ -28,7 +28,7 @@ imagenet_std = (0.229, 0.224, 0.225)
 
 imagenet_train_transform = transforms.Compose([
     transforms.ToPILImage(),
-    # transforms.RandomCrop((img_size, img_size), padding=3),
+    transforms.Resize((img_size, img_size)),
     transforms.RandomHorizontalFlip(p=0.5),
     # transforms.ColorJitter(
     #     brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),

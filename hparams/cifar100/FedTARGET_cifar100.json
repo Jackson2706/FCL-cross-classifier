@@ -24,7 +24,8 @@
     "eval_gap": 1,
     "out_folder": "out",
     "note": null,
-    "num_tasks": 5,
+    "num_tasks": 50,
+    "cpt": 2,
 
     "client_drop_rate": 0.0,
     "time_threthold": 10000

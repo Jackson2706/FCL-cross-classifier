@@ -6,8 +6,9 @@ import numpy as np
 import torch
 from flcore.clients.clientaffcl import ClientAFFCL
 from flcore.servers.serverbase import Server
-from utils.data_utils import (read_client_data_FCL_cifar100,
-                              read_client_data_FCL_imagenet1k, read_client_data_FCL_cifar10)
+from utils.data_utils import (read_client_data_FCL_cifar10,
+                              read_client_data_FCL_cifar100,
+                              read_client_data_FCL_imagenet1k)
 
 
 class FedAFFCL(Server):

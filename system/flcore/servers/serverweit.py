@@ -15,24 +15,24 @@ Training sequence is kept:
   - collect updates → aggregate via TrainModule → set_weights(...)
 """
 
-import os
-import time
 import copy
-import shutil
 import inspect
+import os
+import shutil
+import time
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
-
 from flcore.clients.clientweit import clientWeIT
-from flcore.servers.serverbase import Server
-from flcore.trainmodel.fedewit_models import NetModule, TrainModule, Logger
-from flcore.utils_core.fedweit_utils import *
-
 from flcore.metrics.average_forgetting import metric_average_forgetting
-from utils.data_utils import (read_client_data_FCL_cifar100,
-                              read_client_data_FCL_imagenet1k, read_client_data_FCL_cifar10)
+from flcore.servers.serverbase import Server
+from flcore.trainmodel.fedewit_models import Logger, NetModule, TrainModule
+from flcore.utils_core.fedweit_utils import *
+from utils.data_utils import (read_client_data_FCL_cifar10,
+                              read_client_data_FCL_cifar100,
+                              read_client_data_FCL_imagenet1k)
+
 # Pretty logger (safe if not installed)
 try:
     from utils.rich_progress import RichRoundLogger
@@ -143,7 +143,9 @@ class FedWeIT(Server):
                 # Load next-task data for each client (original)
                 for i in range(len(self.clients)):
                     if self.args.partition_options == 'tuan':
-                        from utils.data_utils import read_client_data_FCL_cifar100, read_client_data_FCL_imagenet1k
+                        from utils.data_utils import (
+                            read_client_data_FCL_cifar100,
+                            read_client_data_FCL_imagenet1k)
                         if self.args.dataset == 'IMAGENET1k':
                             train_data, label_info = read_client_data_FCL_imagenet1k(i, task=task, classes_per_task=self.args.cpt, count_labels=True)
                         elif self.args.dataset == 'CIFAR100':
@@ -151,7 +153,10 @@ class FedWeIT(Server):
                         else:
                             raise NotImplementedError("Not supported dataset")
                     elif self.args.partition_options == 'hetero':
-                        from utils.data_utils_mine import read_client_data_FCL_cifar10, read_client_data_FCL_cifar100, read_client_data_FCL_imagenet1k
+                        from utils.data_utils_mine import (
+                            read_client_data_FCL_cifar10,
+                            read_client_data_FCL_cifar100,
+                            read_client_data_FCL_imagenet1k)
                         if self.args.dataset == 'IMAGENET1k':
                             train_data, label_info = read_client_data_FCL_imagenet1k(i, task=task, classes_per_task=self.args.cpt, count_labels=True,
                                                                                     seed = self.args.seed, alpha = self.args.alpha,
@@ -327,7 +332,8 @@ class FedWeIT(Server):
     def set_clients(self, clientObj):
         for i in range(self.num_clients):
             if self.args.partition_options == 'tuan':
-                from utils.data_utils import read_client_data_FCL_cifar100, read_client_data_FCL_imagenet1k
+                from utils.data_utils import (read_client_data_FCL_cifar100,
+                                              read_client_data_FCL_imagenet1k)
                 if self.args.dataset == 'IMAGENET1k':
                     train_data, label_info = read_client_data_FCL_imagenet1k(i, task=0, classes_per_task=self.args.cpt, count_labels=True)
                 elif self.args.dataset == 'CIFAR100':

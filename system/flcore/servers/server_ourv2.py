@@ -272,7 +272,7 @@ class OursV2(Server):
             
             # 4. Save as a grid (nrow can be adjusted based on number of tasks/classes)
             save_path = os.path.join(debug_dir, f"all_seen_classes_task_{task}.png")
-            save_image(imgs, save_path, nrow=5 if self.dataset == 'CIFAR10' else 10 if self.dataset == 'CIFAR100' else 100, normalize=False)
+            save_image(imgs, save_path, nrow=5 if self.dataset == 'CIFAR10' else 10 if self.dataset == 'CIFAR100' else 50, normalize=False)
             print(f"[Vis] Saved all-class grid to {save_path}")
 
     def receive_models(self):

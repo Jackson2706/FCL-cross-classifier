@@ -14,7 +14,7 @@
     "note": "Ours_v2_Basic_Setup",
 
     "optimizer": "adam",
-    "batch_size": 128,
+    "batch_size": 256,
     "local_learning_rate": 0.01,
     "learning_rate_decay": true,
     "learning_rate_decay_gamma": 0.99,

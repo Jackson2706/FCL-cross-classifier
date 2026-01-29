@@ -47,10 +47,10 @@ torch.manual_seed(0)
 def run(args):
     
     if args.wandb:
-        wandb.login(key="22e152c33a1e551f449b7a2f029bf1258f6e8367")
+        wandb.login(key="")
         wandb.init(
-            project="FCL",
-            entity="jackson2706",
+            project="",
+            entity="",
             config=args, 
             name=f"{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}_{args.note}" if args.note else f"{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}", 
         )

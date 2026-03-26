@@ -44,5 +44,6 @@
     
     "adv": 0.0, 
     "bn": 1.0,
-    "oh": 1.0
+    "oh": 1.0,
+    "generated_samples_per_class": 100
 }

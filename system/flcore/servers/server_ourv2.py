@@ -112,7 +112,7 @@ class OursV2(Server):
         super().__init__(args, times)
         self.img_size = 32 if 'cifar' in self.dataset.lower() else 224
         self.nz = 256 if 'cifar100' in self.dataset.lower() else 100
-
+        self.generated_samples_per_class = args.generated_samples_per_class if hasattr(args, 'generated_samples_per_class') else 100
         self.global_generator = AdvancedGenerator(nz=self.nz, img_size=self.img_size, num_classes=args.num_classes).to(self.device)
         self.critic = Critic(num_classes=args.num_classes, img_size=self.img_size).to(self.device)
         self.optimizer_g = optim.Adam(self.global_generator.parameters(), lr=0.0002, betas=(0.5, 0.999))
@@ -138,7 +138,7 @@ class OursV2(Server):
                 self.eval(task=task, glob_iter=i + task*self.global_rounds, flag="global")
 
             self.train_global_generator()
-            self.train_global_classifier()
+            self.train_global_classifier(samples_per_class=self.generated_samples_per_class)
             self.visualize_synthetic_data(task)
             self.eval_task(task=task, glob_iter=task, flag="global")
             self.send_models()
@@ -217,17 +217,31 @@ class OursV2(Server):
         
         return loss_bn
 
-    def train_global_classifier(self):
+    def train_global_classifier(self, samples_per_class=5):
         self.global_model.train()
         self.global_generator.eval()
-        for _ in range(100):
-            z = torch.randn(64, self.nz).to(self.device)
-            labels = torch.randint(0, self.args.num_classes, (64,)).to(self.device)
+        
+        # Calculate the new batch size based on your classes and desired samples
+        batch_size = self.args.num_classes * samples_per_class
+        
+        for _ in range(100): # Or calculate iterations based on a total desired dataset size
+            # 1. Generate latent vectors
+            z = torch.randn(batch_size, self.nz).to(self.device)
+            
+            # 2. Generate balanced labels: [0, 1, ..., C-1, 0, 1, ..., C-1, ...]
+            labels = torch.arange(self.args.num_classes).repeat(samples_per_class).to(self.device)
+            
+            # 3. Shuffle the latents and labels together (highly recommended for training stability)
+            shuffle_idx = torch.randperm(batch_size)
+            z = z[shuffle_idx]
+            labels = labels[shuffle_idx]
+            
             with torch.no_grad():
                 imgs = self.global_generator(z, labels)
             
             self.optimizer_c.zero_grad()
             logits = self.global_model(imgs)
+            
             # Use instance KD loss
             loss = self.KD_loss(logits, labels, T=2.0) 
             loss.backward()

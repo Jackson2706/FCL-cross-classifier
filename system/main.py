@@ -252,7 +252,7 @@ if __name__ == "__main__":
     parser.add_argument('--seval', action='store_true', help='Log Spatio Gradient')
     parser.add_argument('--teval', action='store_true', help='Log Temporal Gradient')
     parser.add_argument('--pca_eval', action='store_true', help='Log PCA Gradient')
-
+    parser.add_argument('--generated_samples_per_class', type=int, default=100, help='Number of generated samples per class for training the global classifier (only for Ours_v2)')
     args = parser.parse_args()
 
     with open(args.cfp, 'r') as f:
@@ -271,7 +271,7 @@ if __name__ == "__main__":
     cfdct['seval'] = args.seval
     cfdct['teval'] = args.teval
     cfdct['pca_eval'] = args.pca_eval
-
+    cfdct['generated_samples_per_class'] = args.generated_samples_per_class
     print(args.seval)
     print(args.teval)
     print(args.pca_eval)

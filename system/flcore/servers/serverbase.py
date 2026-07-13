@@ -138,6 +138,18 @@ class Server(object):
             # Old JSON configs omit these fields; persist their effective defaults.
             resolved.update(self.async_config)
             resolved.update(self.reliability_config)
+            resolved.setdefault(
+                "generator_distillation",
+                bool(getattr(self.args, "generator_distillation", False)),
+            )
+            resolved.setdefault(
+                "kd_weight",
+                float(getattr(self.args, "kd_weight", getattr(self.args, "kd", 0.5))),
+            )
+            resolved.setdefault(
+                "generator_grad_clip",
+                float(getattr(self.args, "generator_grad_clip", 10.0)),
+            )
             resolved.setdefault("seed", int(getattr(self.args, "seed", 0)))
 
             config_path = os.path.join(self.save_folder, "resolved_config.json")

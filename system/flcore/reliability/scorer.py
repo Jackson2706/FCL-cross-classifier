@@ -14,6 +14,8 @@ RELIABILITY_CONFIG_DEFAULTS = {
     "reliability_beta_bn": 1.0,
     "reliability_trust_floor": 0.0,
     "reliability_accept_threshold": 0.0,
+    "calibration_temperature": 1.0,
+    "ece_bins": 15,
 }
 
 
@@ -22,7 +24,7 @@ class ReliabilityScorer:
 
     MODES = {
         "none", "entropy", "mutual_information", "bn_realism",
-        "trust_only", "multi_signal", "oracle_debug",
+        "trust_only", "multi_signal", "calibrated", "oracle_debug",
     }
 
     def __init__(self, mode="none", **cfg):
@@ -35,6 +37,9 @@ class ReliabilityScorer:
         self.beta_entropy = float(cfg.get("reliability_beta_entropy", 1.0))
         self.beta_bn = float(cfg.get("reliability_beta_bn", 1.0))
         self.trust_floor = float(cfg.get("reliability_trust_floor", 0.0))
+        self.calibration_temperature = float(cfg.get("calibration_temperature", 1.0))
+        if self.calibration_temperature <= 0.0:
+            raise ValueError("calibration_temperature must be positive")
         self.oracle_error_weight = float(cfg.get("reliability_oracle_error_weight", 0.05))
         self.last_missing_signals = []
 
@@ -100,12 +105,16 @@ class ReliabilityScorer:
         if logits_or_ensemble is not None:
             logits = self._stack_logits(logits_or_ensemble).to(dtype=reference.dtype)
 
-        if self.mode in {"entropy", "multi_signal"}:
+        if self.mode in {"entropy", "multi_signal", "calibrated"}:
             if logits is None:
                 entropy_factor = torch.ones(batch_size, device=reference.device)
                 self.last_missing_signals.append("entropy")
             else:
-                entropy = self._entropy(self._predictive_distribution(logits))
+                calibrated_logits = (
+                    logits / self.calibration_temperature
+                    if self.mode == "calibrated" else logits
+                )
+                entropy = self._entropy(self._predictive_distribution(calibrated_logits))
                 beta = self.beta if self.mode == "entropy" else self.beta_entropy
                 entropy_factor = torch.exp(-beta * entropy)
             if self.mode == "entropy":
@@ -120,7 +129,7 @@ class ReliabilityScorer:
             uncertainty = (predictive_entropy - expected_entropy).clamp_min(0.0)
             return torch.exp(-self.beta * uncertainty).clamp(0.0, 1.0).detach()
 
-        if self.mode in {"bn_realism", "multi_signal"}:
+        if self.mode in {"bn_realism", "multi_signal", "calibrated"}:
             if bn_distance is None:
                 bn_factor = torch.ones(batch_size, device=reference.device)
                 self.last_missing_signals.append("bn_distance")
@@ -135,7 +144,7 @@ class ReliabilityScorer:
             if self.mode == "bn_realism":
                 return bn_factor.clamp(0.0, 1.0).detach()
 
-        if self.mode in {"trust_only", "multi_signal"}:
+        if self.mode in {"trust_only", "multi_signal", "calibrated"}:
             if trust is None:
                 trust_factor = torch.ones(batch_size, device=reference.device)
                 self.last_missing_signals.append("trust")
@@ -148,7 +157,7 @@ class ReliabilityScorer:
             if self.mode == "trust_only":
                 return trust_factor.detach()
 
-        if self.mode == "multi_signal":
+        if self.mode in {"multi_signal", "calibrated"}:
             return (entropy_factor * bn_factor * trust_factor).clamp(0.0, 1.0).detach()
 
         if targets is None or logits is None:

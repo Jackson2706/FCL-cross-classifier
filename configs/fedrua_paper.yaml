@@ -1,0 +1,90 @@
+# Canonical FEDRUA paper-reproduction configuration for CIFAR-100.
+# The legacy JSON uses 10 clients / 100 generated samples per class. The paper
+# scale below is 20 / 200; reduce these two values for cheaper development runs.
+
+algorithm: Ours_v2
+dataset: CIFAR100
+num_classes: 100
+model: ResNet18
+model_str: resnet18
+device: cuda
+device_id: "0"
+seed: 0
+
+log: true
+offlog: false
+wandb: false
+out_folder: out
+note: fedrua_paper
+
+optimizer: adam
+batch_size: 128
+local_learning_rate: 0.05
+learning_rate_decay: true
+learning_rate_decay_gamma: 0.99
+
+join_ratio: 1.0
+random_join_ratio: false
+client_drop_rate: 0.0
+prev: 0
+times: 1
+
+global_rounds: 50
+local_epochs: 5
+eval_gap: 1
+time_threthold: 10000
+num_tasks: 5
+cpt: 20
+
+g_lr: 0.01
+g_steps: 2000
+replay_weight: 25
+nz: 256
+latent_dim: 256
+num_clients: 20
+generated_samples_per_class: 200
+gen_type: advanced
+
+# Generator objective: oh*L_cls + kd_weight*L_kd + bn*L_bn + adv*L_adv.
+# L_bn uses a mean-per-BN-channel reduction (the legacy path keeps its raw sum).
+# kd=0.5 follows the existing inverse-temperature convention, hence T=2.
+generator_distillation: true
+kd: 0.5
+kd_weight: 0.5
+generator_grad_clip: 10.0
+oh: 1.0
+bn: 1.0
+adv: 0.0
+
+reliability_mode: multi_signal
+reliability_beta: 1.0
+reliability_beta_entropy: 0.1
+reliability_beta_bn: 0.000001
+reliability_trust_floor: 0.25
+reliability_accept_threshold: 0.05
+calibration_temperature: 1.0
+ece_bins: 15
+
+# Safe journal defaults. Async and other later-phase modules remain disabled.
+async_mode: false
+client_task_speed_distribution: fixed_groups
+max_task_lag: 0
+client_dropout_rate: 0.0
+permanent_dropout_rate: 0.0
+partial_participation_rate: 1.0
+task_schedule_seed: 0
+num_speed_groups: 2
+speed_interval: [0.5, 1.0]
+custom_schedule_path: null
+allow_task_jumps: false
+consolidation_trigger: watermark
+consolidation_timeout_rounds: null
+consolidation_quorum: 1.0
+
+# TODO(Phase 4): switch to fgsm once adversarial replay/density gating lands.
+boundary_mode: none
+robustness_mode: none
+model_heterogeneity: false
+client_model_pool: [resnet18]
+server_model: resnet18
+aggregation_mode: fedavg

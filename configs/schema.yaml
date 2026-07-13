@@ -20,6 +20,15 @@ reliability_beta_entropy: 1.0
 reliability_beta_bn: 1.0
 reliability_trust_floor: 0.0
 reliability_accept_threshold: 0.0
+calibration_temperature: 1.0
+ece_bins: 15
+
+# Generator-side paper objective is opt-in. kd_weight defaults to the legacy
+# kd value (0.5) when omitted; kd retains its inverse-temperature convention.
+generator_distillation: false
+kd_weight: 0.5
+# Enabled-path stability guard; non-positive disables clipping but still checks finiteness.
+generator_grad_clip: 10.0
 boundary_mode: none
 robustness_mode: none
 

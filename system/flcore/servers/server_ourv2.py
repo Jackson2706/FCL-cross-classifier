@@ -1,11 +1,17 @@
 import copy
 import math
 import os
+import random
 import numpy as np
 import torch
 import torch.nn.functional as F
 from flcore.clients.client_ourv2 import clientOursV2
+from flcore.reliability.calibration import expected_calibration_error
 from flcore.reliability.logging import ReliabilityLogger
+from flcore.reliability.objectives import (
+    weighted_classification_loss,
+    weighted_kl_distillation_loss,
+)
 from flcore.reliability.scorer import ReliabilityScorer
 from flcore.reliability.signals import bn_feature_distance
 from flcore.scheduler.consolidation import ConsolidationManager
@@ -210,6 +216,16 @@ class OursV2(Server):
         self.img_size = 32 if 'cifar' in self.dataset.lower() else 224
         self.nz = 256 if 'cifar100' in self.dataset.lower() else 100
         self.generated_samples_per_class = args.generated_samples_per_class if hasattr(args, 'generated_samples_per_class') else 100
+        self.generator_distillation = bool(
+            getattr(args, "generator_distillation", False)
+        )
+        self.kd_weight = float(
+            getattr(args, "kd_weight", getattr(args, "kd", 0.5))
+        )
+        self.generator_grad_clip = float(
+            getattr(args, "generator_grad_clip", 10.0)
+        )
+        self.last_generator_losses = None
         
         # New argument for the robustness filter
         self.filter_threshold = getattr(args, 'filter_threshold', 1.5)
@@ -346,7 +362,7 @@ class OursV2(Server):
                 safe_dict[client_id] = self.client_info_dict[client_id]
             else:
                 dropped_ids.append(client_id)
-                
+
         if len(dropped_ids) > 0:
             print(f"[Server Filter] Dropped {len(dropped_ids)} anomalous clients based on L2 divergence: {dropped_ids}")
             
@@ -401,7 +417,7 @@ class OursV2(Server):
                 global_round = i + task * self.global_rounds
                 round_states = self.task_scheduler.state_for_round(global_round)
                 self.selected_clients = self.select_clients()
-                
+
                 # SIMULATE ATTACK/NOISE: Inject massive noise into the first 2 selected clients
                 # Remove or comment out this block when running normal, non-poisoned experiments!
                 if getattr(self.args, 'simulate_bad_clients', False):
@@ -410,12 +426,12 @@ class OursV2(Server):
                         print(f"[Simulate Attack] Injecting severe noise into client ID: {self.selected_clients[j].id}")
                         for param in self.selected_clients[j].model.parameters():
                             param.data += torch.randn_like(param.data) * 5.0 # Massive noise
-                
+
                 for client in self.selected_clients:
                     client_state = round_states[client.id]
                     if client_state.active and not client_state.dropped:
                         client.train(task=client_state.task_id)
-                
+
                 self.receive_models()
                 self.aggregate_parameters()
                 self.send_models()
@@ -429,6 +445,7 @@ class OursV2(Server):
             with self.server_compute_timer.measure(task):
                 self.train_global_generator()
                 self.train_global_classifier()
+            self._record_calibration(task=task, global_round=global_round)
             self.visualize_synthetic_data(task)
             self.eval_task(task=task, glob_iter=task, flag="global")
             self.send_models()
@@ -555,6 +572,9 @@ class OursV2(Server):
                     self.train_global_classifier(
                         seen_classes=event.globally_consolidated_classes
                     )
+                self._record_calibration(
+                    task=event.boundary_k, global_round=global_round
+                )
             finally:
                 self.client_info_dict = previous_client_info
             self.eval_task(
@@ -638,40 +658,188 @@ class OursV2(Server):
             return
         seen_classes_tensor = torch.tensor(seen_classes, dtype=torch.long, device=self.device)
 
-        for _ in range(getattr(self.args, 'g_steps', 200)):
+        # Compatibility contract: this is the exact historical objective and
+        # optimizer sequence.  Existing JSON configurations take this branch.
+        if not self.generator_distillation:
+            for _ in range(getattr(self.args, 'g_steps', 200)):
+                z = torch.randn(64, self.nz).to(self.device)
+
+                # Sample only from seen classes
+                idx = torch.randint(0, len(seen_classes), (64,), device=self.device)
+                labels = seen_classes_tensor[idx]
+
+                # 1. Update Critic
+                self.optimizer_cr.zero_grad()
+                gen_imgs = self.global_generator(z, labels)
+                d_loss = -torch.mean(self.critic(gen_imgs.detach(), labels))
+                d_loss.backward()
+                self.optimizer_cr.step()
+
+                # 2. Update Generator
+                self.optimizer_g.zero_grad()
+                loss_adv = -torch.mean(self.critic(gen_imgs, labels))
+
+                total_ce, total_bn, valid_t = 0, 0, 0
+
+                # Loop runs over the filtered safe dictionary!
+                for _, info in self.client_info_dict.items():
+                    mask = np.isin(labels.cpu().numpy(), info["label"])
+                    if mask.sum() > 0:
+                        valid_t += 1
+                        m_idx = torch.tensor(mask, device=self.device)
+                        preds = info["model"].eval().to(self.device)(gen_imgs[m_idx])
+                        total_ce += criterion_ce(preds, labels[m_idx])
+                        if mask.sum() >= MIN_BN_SAMPLES:
+                            total_bn += self.get_bn_loss(info["model"], gen_imgs[m_idx])
+
+                loss_g = loss_adv + (total_ce / max(1, valid_t)) + 0.1 * (total_bn / max(1, valid_t))
+                loss_g.backward()
+                self.optimizer_g.step()
+            return
+
+        adv_weight = float(getattr(self.args, "adv", 1.0))
+        cls_weight = float(getattr(self.args, "oh", 1.0))
+        bn_weight = float(getattr(self.args, "bn", 1.0))
+        kd = float(getattr(self.args, "kd", 0.5))
+        temperature = 1.0 / kd if kd > 0.0 else 2.0
+        self._update_client_trust()
+        self.global_model.eval()
+        self.last_generator_losses = None
+
+        for step in range(getattr(self.args, 'g_steps', 200)):
             z = torch.randn(64, self.nz).to(self.device)
             
             # Sample only from seen classes
             idx = torch.randint(0, len(seen_classes), (64,), device=self.device)
             labels = seen_classes_tensor[idx]
 
-            # 1. Update Critic
-            self.optimizer_cr.zero_grad()
             gen_imgs = self.global_generator(z, labels)
-            d_loss = -torch.mean(self.critic(gen_imgs.detach(), labels))
-            d_loss.backward()
-            self.optimizer_cr.step()
 
-            # 2. Update Generator
+            # The critic remains available as an ablation.  adv=0 makes it
+            # completely inactive so BN matching is the surrogate critic.
+            if adv_weight != 0.0:
+                self.optimizer_cr.zero_grad()
+                d_loss = -torch.mean(self.critic(gen_imgs.detach(), labels))
+                d_loss.backward()
+                self.optimizer_cr.step()
+
             self.optimizer_g.zero_grad()
-            loss_adv = -torch.mean(self.critic(gen_imgs, labels))
-            
-            total_ce, total_bn, valid_t = 0, 0, 0
-            
-            # Loop runs over the filtered safe dictionary!
-            for _, info in self.client_info_dict.items():
-                mask = np.isin(labels.cpu().numpy(), info["label"])
+            loss_adv = (
+                -torch.mean(self.critic(gen_imgs, labels))
+                if adv_weight != 0.0 else gen_imgs.new_tensor(0.0)
+            )
+            total_cls = gen_imgs.new_tensor(0.0)
+            total_kd = gen_imgs.new_tensor(0.0)
+            total_bn = gen_imgs.new_tensor(0.0)
+            valid_t = 0
+
+            for client_id, info in self.client_info_dict.items():
+                teacher_classes = torch.as_tensor(
+                    list(info["label"]), device=labels.device, dtype=labels.dtype
+                )
+                mask = torch.isin(labels, teacher_classes)
                 if mask.sum() > 0:
                     valid_t += 1
-                    m_idx = torch.tensor(mask, device=self.device)
-                    preds = info["model"].eval().to(self.device)(gen_imgs[m_idx])
-                    total_ce += criterion_ce(preds, labels[m_idx])
-                    if mask.sum() >= MIN_BN_SAMPLES: 
-                        total_bn += self.get_bn_loss(info["model"], gen_imgs[m_idx])
+                    relevant_imgs = gen_imgs[mask]
+                    relevant_labels = labels[mask]
+                    teacher = info["model"].eval().to(self.device)
+                    teacher_logits = teacher(relevant_imgs)
+                    student_logits = self.global_model(relevant_imgs)
 
-            loss_g = loss_adv + (total_ce / max(1, valid_t)) + 0.1 * (total_bn / max(1, valid_t))
+                    with torch.no_grad():
+                        score_logits = teacher_logits.detach()
+                        if self.reliability_scorer.mode == "mutual_information":
+                            score_logits = torch.stack([
+                                other["model"].eval().to(self.device)(relevant_imgs)
+                                for other in self.client_info_dict.values()
+                            ], dim=0)
+                        bn_distance = None
+                        if self.reliability_scorer.mode in {
+                            "bn_realism", "multi_signal", "calibrated"
+                        }:
+                            bn_distance = bn_feature_distance(
+                                teacher, relevant_imgs, per_sample=True
+                            )
+                        trust = relevant_imgs.new_full(
+                            (relevant_labels.numel(),),
+                            self.client_trust.get(client_id, 1.0),
+                        )
+                        weights = self.reliability_scorer.score(
+                            score_logits,
+                            targets=relevant_labels,
+                            bn_distance=bn_distance,
+                            trust=trust,
+                        )
+
+                    total_cls += weighted_classification_loss(
+                        teacher_logits, relevant_labels, weights
+                    )
+                    total_kd += weighted_kl_distillation_loss(
+                        teacher_logits, student_logits, weights, temperature
+                    )
+                    if mask.sum() >= MIN_BN_SAMPLES:
+                        # The legacy BN helper is a raw channel sum.  The paper
+                        # branch uses a mean per BN feature channel so its scale
+                        # is architecture-independent and numerically stable.
+                        bn_channels = sum(
+                            module.num_features
+                            for module in teacher.modules()
+                            if isinstance(module, nn.BatchNorm2d)
+                        )
+                        total_bn += self.get_bn_loss(
+                            teacher, relevant_imgs
+                        ) / max(1, bn_channels)
+
+            if valid_t == 0:
+                continue
+            loss_cls = total_cls / valid_t
+            loss_kd = total_kd / valid_t
+            loss_bn = total_bn / valid_t
+            loss_g = (
+                adv_weight * loss_adv
+                + cls_weight * loss_cls
+                + self.kd_weight * loss_kd
+                + bn_weight * loss_bn
+            )
             loss_g.backward()
-            self.optimizer_g.step()
+            max_grad_norm = (
+                self.generator_grad_clip
+                if self.generator_grad_clip > 0.0 else float("inf")
+            )
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.global_generator.parameters(), max_grad_norm
+            )
+            if torch.isfinite(grad_norm):
+                self.optimizer_g.step()
+                update_skipped = False
+            else:
+                self.optimizer_g.zero_grad()
+                update_skipped = True
+                print(
+                    "[Generator Distillation] Skipped update due to non-finite gradient norm."
+                )
+            self.last_generator_losses = {
+                "step": int(step),
+                "total": float(loss_g.detach()),
+                "cls": float(loss_cls.detach()),
+                "kd": float(loss_kd.detach()),
+                "bn": float(loss_bn.detach()),
+                "adv": float(loss_adv.detach()),
+                "mean_weight": float(weights.mean()),
+                "grad_norm": float(grad_norm.detach()),
+                "update_skipped": update_skipped,
+            }
+
+        if self.last_generator_losses is not None:
+            terms = self.last_generator_losses
+            print(
+                "[Generator Distillation] "
+                f"L_G={terms['total']:.6f} L_cls={terms['cls']:.6f} "
+                f"L_kd={terms['kd']:.6f} L_bn={terms['bn']:.6f} "
+                f"L_adv={terms['adv']:.6f} mean_w={terms['mean_weight']:.6f} "
+                f"grad_norm={terms['grad_norm']:.6f} "
+                f"skipped={terms['update_skipped']}"
+            )
 
     def get_bn_loss(self, teacher_model, gen_imgs):
         return bn_feature_distance(teacher_model, gen_imgs, per_sample=False)
@@ -704,7 +872,7 @@ class OursV2(Server):
         )[source_index]
 
         bn_distance = None
-        if self.reliability_scorer.mode in {"bn_realism", "multi_signal"}:
+        if self.reliability_scorer.mode in {"bn_realism", "multi_signal", "calibrated"}:
             bn_distance = imgs.new_zeros(batch_size)
             for index, client_id in enumerate(teacher_ids):
                 mask = source_index == index
@@ -762,7 +930,7 @@ class OursV2(Server):
                         self._reliability_teacher_signals(imgs, batch_labels)
                     )
                     use_teacher_ensemble = self.reliability_scorer.mode in {
-                        "entropy", "mutual_information", "multi_signal"
+                        "entropy", "mutual_information", "multi_signal", "calibrated"
                     }
                     score_logits = (
                         ensemble if use_teacher_ensemble and ensemble is not None
@@ -799,6 +967,59 @@ class OursV2(Server):
 
     def KD_loss(self, student_logits, labels, T=2.0):
         return F.cross_entropy(student_logits / T, labels)
+
+    def _record_calibration(self, task, global_round):
+        """Best-effort ECE on real test predictions without perturbing RNG state."""
+
+        if self.reliability_logger is None:
+            return
+        python_state = random.getstate()
+        numpy_state = np.random.get_state()
+        torch_state = torch.random.get_rng_state()
+        cuda_states = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        was_training = self.global_model.training
+        try:
+            logits_batches, target_batches = [], []
+            self.global_model.eval()
+            with torch.no_grad():
+                for test_task in range(min(int(task) + 1, self.num_tasks)):
+                    for client in self.clients:
+                        for inputs, targets in client.load_test_data(task=test_task):
+                            if isinstance(inputs, list):
+                                inputs[0] = inputs[0].to(self.device)
+                            else:
+                                inputs = inputs.to(self.device)
+                            targets = targets.to(self.device)
+                            logits_batches.append(self.global_model(inputs).cpu())
+                            target_batches.append(targets.cpu())
+            if not logits_batches:
+                return
+            logits = torch.cat(logits_batches)
+            targets = torch.cat(target_batches)
+            bins = int(getattr(self.args, "ece_bins", 15))
+            temperature = float(
+                getattr(self.args, "calibration_temperature", 1.0)
+            )
+            ece = expected_calibration_error(
+                logits, targets, bins=bins, temperature=temperature
+            )
+            self.reliability_logger.add_calibration(
+                ece=ece,
+                task=task,
+                global_round=global_round,
+                num_samples=targets.numel(),
+                bins=bins,
+                temperature=temperature,
+            )
+        except Exception as error:
+            print(f"[Calibration] ECE skipped: {error}")
+        finally:
+            self.global_model.train(was_training)
+            random.setstate(python_state)
+            np.random.set_state(numpy_state)
+            torch.random.set_rng_state(torch_state)
+            if cuda_states is not None:
+                torch.cuda.set_rng_state_all(cuda_states)
 
     def visualize_synthetic_data(self, task):
         debug_dir = os.path.join("output_debug", self.args.dataset, f"task_{task}")

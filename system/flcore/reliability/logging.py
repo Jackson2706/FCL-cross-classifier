@@ -14,6 +14,7 @@ class ReliabilityLogger:
         self.accept_threshold = float(accept_threshold)
         self.bins = int(bins)
         self.records = []
+        self.calibration_records = []
         self._batches = []
 
     def add_batch(self, weights, labels, source_clients, correct, missing_signals=()):
@@ -83,10 +84,33 @@ class ReliabilityLogger:
             }
             self.records.append(record)
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
-            with open(self.path, "w") as handle:
-                json.dump({"consolidations": self.records}, handle, indent=2, sort_keys=True)
-                handle.write("\n")
+            self._write()
         except Exception:
             pass
         finally:
             self._batches = []
+
+    def add_calibration(self, ece, task, global_round, num_samples, bins, temperature):
+        """Append a guarded real-test-set ECE record."""
+
+        try:
+            self.calibration_records.append({
+                "task": int(task),
+                "global_round": int(global_round),
+                "ece": float(ece),
+                "num_samples": int(num_samples),
+                "bins": int(bins),
+                "temperature": float(temperature),
+            })
+            self._write()
+        except Exception:
+            pass
+
+    def _write(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        with open(self.path, "w") as handle:
+            json.dump({
+                "calibration": self.calibration_records,
+                "consolidations": self.records,
+            }, handle, indent=2, sort_keys=True)
+            handle.write("\n")

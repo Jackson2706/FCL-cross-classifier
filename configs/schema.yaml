@@ -41,6 +41,21 @@ density_tau: null
 boundary_robust_eval: true
 # Optional development cap applied per client/test-task; null evaluates all batches.
 robust_eval_max_batches: null
+# Read-only diagnostics run only for persisted runs (offlog=true). Every pass
+# restores Python/NumPy/Torch RNG streams and all model train/eval flags.
+boundary_diagnostics: true
+boundary_margin_threshold: 0.0
+boundary_margin_band: 0.1
+boundary_histogram_bins: 20
+boundary_histogram_range: [-5.0, 5.0]
+boundary_diagnostic_samples_per_class: 32
+boundary_prototype_samples_per_class: 32
+boundary_diagnostic_max_batches: null
+boundary_diagnostic_max_samples_per_batch: null
+boundary_save_center_matrix: false
+margin_target: 1.0
+margin_lambda: 0.1
+prototype_feature_layer: penultimate
 robustness_mode: none
 
 # All clients currently share one ResNet-18 model and use parameter averaging.

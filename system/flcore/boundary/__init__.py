@@ -8,6 +8,13 @@ from .attacks import (
     pgd_light_attack,
 )
 from .evaluation import evaluate_robust_accuracy
+from .diagnostics import (
+    class_center_distance_matrix,
+    classification_margins,
+    margin_regularization_loss,
+    prototype_drift,
+    prototype_margin_loss,
+)
 
 __all__ = [
     "BOUNDARY_CONFIG_DEFAULTS",
@@ -16,4 +23,9 @@ __all__ = [
     "evaluate_robust_accuracy",
     "fgsm_attack",
     "pgd_light_attack",
+    "class_center_distance_matrix",
+    "classification_margins",
+    "margin_regularization_loss",
+    "prototype_drift",
+    "prototype_margin_loss",
 ]

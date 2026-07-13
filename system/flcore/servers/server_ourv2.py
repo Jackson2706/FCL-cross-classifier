@@ -1,4 +1,5 @@
 import copy
+import json
 import math
 import os
 import random
@@ -13,6 +14,18 @@ from flcore.boundary.attacks import (
     pgd_light_attack,
 )
 from flcore.boundary.evaluation import evaluate_robust_accuracy
+from flcore.boundary.diagnostics import (
+    class_center_distance_matrix,
+    classification_margins,
+    class_prototypes,
+    margin_regularization_loss,
+    model_outputs_and_features,
+    preserve_diagnostic_state,
+    prototype_drift,
+    prototype_margin_loss,
+    summarize_margins,
+    top_two_margins,
+)
 from flcore.clients.client_ourv2 import clientOursV2
 from flcore.reliability.calibration import expected_calibration_error
 from flcore.reliability.logging import ReliabilityLogger
@@ -27,6 +40,7 @@ from flcore.servers.serverbase import Server
 from flcore.scheduler.task_scheduler import TaskScheduler
 from torch import nn, optim
 from torch.nn.utils import spectral_norm
+from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from utils.data_utils import (read_client_data_FCL_cifar10,
                               read_client_data_FCL_cifar100,
@@ -258,12 +272,22 @@ class OursV2(Server):
                 f"Unknown boundary_mode: {self.boundary_mode}. "
                 f"Choose from: {sorted(BOUNDARY_MODES)}"
             )
+        if self.boundary_config["prototype_feature_layer"] != "penultimate":
+            raise ValueError("Only prototype_feature_layer=penultimate is supported")
+        self.boundary_diagnostics_enabled = bool(
+            self.offlog and self.boundary_config["boundary_diagnostics"]
+        )
         self.boundary_metrics = {
             "mode": self.boundary_mode,
             "consolidations": [],
             "robust_accuracy": [],
-        } if self.boundary_mode != "none" else None
+            "diagnostics": [],
+        } if self.boundary_mode != "none" or self.boundary_diagnostics_enabled else None
         self._boundary_gate_batches = []
+        self._boundary_regularizer_batches = []
+        self._previous_boundary_prototypes = {}
+        self._current_boundary_prototypes = {}
+        self._boundary_prototype_samples = {}
 
         gen_type = getattr(args, 'gen_type', 'advanced').lower()
         print(f"\n[Server] Initializing generator architecture: {gen_type.upper()}")
@@ -465,6 +489,7 @@ class OursV2(Server):
             with self.server_compute_timer.measure(task):
                 self.train_global_generator()
                 self.train_global_classifier()
+            self._record_boundary_diagnostics(task=task, global_round=global_round)
             self._record_calibration(task=task, global_round=global_round)
             self._record_boundary_robustness(task=task, global_round=global_round)
             self.visualize_synthetic_data(task)
@@ -593,6 +618,10 @@ class OursV2(Server):
                     self.train_global_classifier(
                         seen_classes=event.globally_consolidated_classes
                     )
+                self._record_boundary_diagnostics(
+                    task=event.boundary_k, global_round=global_round,
+                    seen_classes=event.globally_consolidated_classes,
+                )
                 self._record_calibration(
                     task=event.boundary_k, global_round=global_round
                 )
@@ -915,6 +944,7 @@ class OursV2(Server):
         if not seen_classes:
             print("No seen classes yet. Skipping classifier training.")
             return
+        active_prototypes = self._current_boundary_prototypes
         seen_classes_tensor = torch.tensor(seen_classes, dtype=torch.long)
 
         samples_per_class = self.generated_samples_per_class
@@ -941,7 +971,11 @@ class OursV2(Server):
                 imgs = self.global_generator(z, batch_labels)
             
             self.optimizer_c.zero_grad()
-            logits = self.global_model(imgs)
+            features = None
+            if self.boundary_mode == "prototype_margin":
+                features, logits = model_outputs_and_features(self.global_model, imgs)
+            else:
+                logits = self.global_model(imgs)
 
             if self.reliability_scorer.mode == "none":
                 # Compatibility contract: this is the exact historical objective.
@@ -1011,9 +1045,22 @@ class OursV2(Server):
                     "adversarial_loss": float(adversarial_loss.detach()),
                 })
             elif self.boundary_mode != "none":
-                raise NotImplementedError(
-                    f"boundary_mode={self.boundary_mode} is reserved for Phase 4b"
-                )
+                if self.boundary_mode == "margin_regularization":
+                    regularizer = margin_regularization_loss(
+                        logits, batch_labels, weights,
+                        self.boundary_config["margin_target"],
+                        self.boundary_config["margin_lambda"],
+                    )
+                elif self.boundary_mode == "prototype_margin":
+                    regularizer = prototype_margin_loss(
+                        features, batch_labels, active_prototypes, weights,
+                        self.boundary_config["margin_target"],
+                        self.boundary_config["margin_lambda"],
+                    )
+                else:
+                    raise ValueError(f"Unsupported boundary mode: {self.boundary_mode}")
+                loss = loss + regularizer
+                self._boundary_regularizer_batches.append(float(regularizer.detach()))
 
             if self.reliability_logger is not None:
                 self.reliability_logger.add_batch(
@@ -1057,6 +1104,26 @@ class OursV2(Server):
                 f"({record['accepted']}/{record['total']})"
             )
             self._boundary_gate_batches = []
+            self._write_boundary_log()
+        elif self.boundary_mode in {"margin_regularization", "prototype_margin"}:
+            values = self._boundary_regularizer_batches
+            record = {
+                "consolidation": len(self.boundary_metrics["consolidations"]),
+                "regularizer": self.boundary_mode,
+                "margin_target": float(self.boundary_config["margin_target"]),
+                "margin_lambda": float(self.boundary_config["margin_lambda"]),
+                "mean_regularizer_loss": float(np.mean(values)) if values else 0.0,
+                "active_batches": int(sum(value > 0.0 for value in values)),
+                "total_batches": len(values),
+            }
+            self.boundary_metrics["consolidations"].append(record)
+            print(
+                "[Boundary] "
+                f"mode={self.boundary_mode} L_margin={record['mean_regularizer_loss']:.6f} "
+                f"active_batches={record['active_batches']}/{record['total_batches']}"
+            )
+            self._boundary_regularizer_batches = []
+            self._write_boundary_log()
 
     def KD_loss(self, student_logits, labels, T=2.0):
         return F.cross_entropy(student_logits / T, labels)
@@ -1074,6 +1141,227 @@ class OursV2(Server):
         mean = reference.new_tensor(mean).view(shape)
         std = reference.new_tensor(std).view(shape)
         return -mean / std, (1.0 - mean) / std
+
+    def _collect_real_boundary_observations(self, task, seen_classes):
+        """Collect logits/features from seen real test tasks under no_grad."""
+
+        features, targets, true_margins, top_margins = [], [], [], []
+        max_batches = self.boundary_config["boundary_diagnostic_max_batches"]
+        with torch.no_grad():
+            for test_task in range(min(int(task) + 1, self.num_tasks)):
+                for client in self.clients:
+                    for batch_index, (inputs, batch_targets) in enumerate(
+                        client.load_test_data(task=test_task)
+                    ):
+                        if max_batches is not None and batch_index >= int(max_batches):
+                            break
+                        inputs = inputs[0] if isinstance(inputs, list) else inputs
+                        max_samples = self.boundary_config["boundary_diagnostic_max_samples_per_batch"]
+                        if max_samples is not None:
+                            inputs = inputs[:int(max_samples)]
+                            batch_targets = batch_targets[:int(max_samples)]
+                        inputs = inputs.to(self.device)
+                        batch_targets = batch_targets.to(self.device)
+                        batch_features, logits = model_outputs_and_features(
+                            self.global_model, inputs
+                        )
+                        features.append(batch_features.detach().reshape(batch_features.shape[0], -1).cpu())
+                        targets.append(batch_targets.detach().cpu())
+                        true_margins.append(classification_margins(logits, batch_targets).cpu())
+                        top_margins.append(top_two_margins(logits).cpu())
+        if not targets:
+            return None
+        all_features = torch.cat(features)
+        all_targets = torch.cat(targets)
+        return {
+            "features": all_features,
+            "targets": all_targets,
+            "true_margins": torch.cat(true_margins),
+            "top_margins": torch.cat(top_margins),
+            "prototypes": class_prototypes(all_features, all_targets, seen_classes),
+        }
+
+    def _collect_training_prototypes(self, task, seen_classes):
+        """Update a bounded real-train exemplar cache and recompute centers."""
+
+        del task  # Clients already hold their current task's real training split.
+        max_batches = self.boundary_config["boundary_diagnostic_max_batches"]
+        sample_cap = max(1, int(
+            self.boundary_config["boundary_prototype_samples_per_class"]
+        ))
+        seen_set = set(int(label) for label in seen_classes)
+        for client in self.clients:
+            loader = DataLoader(
+                client.train_data, batch_size=self.batch_size,
+                shuffle=True, drop_last=False,
+            )
+            for batch_index, (inputs, batch_targets) in enumerate(loader):
+                if max_batches is not None and batch_index >= int(max_batches):
+                    break
+                inputs = inputs[0] if isinstance(inputs, list) else inputs
+                max_samples = self.boundary_config["boundary_diagnostic_max_samples_per_batch"]
+                if max_samples is not None:
+                    inputs = inputs[:int(max_samples)]
+                    batch_targets = batch_targets[:int(max_samples)]
+                for sample, label_tensor in zip(inputs, batch_targets):
+                    label = int(label_tensor)
+                    if label not in seen_set:
+                        continue
+                    samples = self._boundary_prototype_samples.setdefault(label, [])
+                    if len(samples) < sample_cap:
+                        samples.append(sample.detach().cpu().clone())
+                if all(
+                    len(self._boundary_prototype_samples.get(int(label), [])) >= sample_cap
+                    for label in client.current_labels
+                ):
+                    break
+
+        cached_inputs, cached_targets = [], []
+        for label in sorted(seen_set):
+            samples = self._boundary_prototype_samples.get(label, [])
+            cached_inputs.extend(samples)
+            cached_targets.extend([label] * len(samples))
+        if not cached_targets:
+            return {}
+        cached_inputs = torch.stack(cached_inputs)
+        cached_targets = torch.tensor(cached_targets, dtype=torch.long)
+        feature_batches = []
+        with torch.no_grad():
+            for start in range(0, len(cached_targets), max(1, self.batch_size)):
+                batch = cached_inputs[start:start + self.batch_size].to(self.device)
+                batch_features, _ = model_outputs_and_features(self.global_model, batch)
+                feature_batches.append(
+                    batch_features.detach().reshape(batch_features.shape[0], -1).cpu()
+                )
+        return class_prototypes(
+            torch.cat(feature_batches), cached_targets, seen_classes
+        )
+
+    def _margin_diagnostic_summary(self, true_margins, top_margins):
+        config = self.boundary_config
+        kwargs = {
+            "threshold": config["boundary_margin_threshold"],
+            "band": config["boundary_margin_band"],
+            "bins": config["boundary_histogram_bins"],
+            "value_range": config["boundary_histogram_range"],
+        }
+        return {
+            "true_class_margin": summarize_margins(true_margins, **kwargs),
+            "top1_top2_margin": summarize_margins(top_margins, **kwargs),
+        }
+
+    def _record_boundary_diagnostics(self, task, global_round, seen_classes=None):
+        """Observe real/synthetic margins and feature geometry without side effects."""
+
+        if not self.boundary_diagnostics_enabled:
+            return
+        seen_classes = self.get_seen_classes() if seen_classes is None else sorted(set(seen_classes))
+        if not seen_classes:
+            return
+        try:
+            with preserve_diagnostic_state(self.global_model, self.global_generator):
+                self.global_model.eval()
+                self.global_generator.eval()
+                real = self._collect_real_boundary_observations(task, seen_classes)
+                if real is None:
+                    return
+
+                samples_per_class = max(
+                    1, int(self.boundary_config["boundary_diagnostic_samples_per_class"])
+                )
+                synthetic_targets = torch.tensor(
+                    seen_classes, device=self.device, dtype=torch.long
+                ).repeat_interleave(samples_per_class)
+                with torch.no_grad():
+                    noise = torch.randn(len(synthetic_targets), self.nz, device=self.device)
+                    synthetic_inputs = self.global_generator(noise, synthetic_targets)
+                    _, synthetic_logits = model_outputs_and_features(
+                        self.global_model, synthetic_inputs
+                    )
+                    synthetic_true_margins = classification_margins(
+                        synthetic_logits, synthetic_targets
+                    ).cpu()
+                    synthetic_top_margins = top_two_margins(synthetic_logits).cpu()
+
+                prototypes = self._collect_training_prototypes(task, seen_classes)
+                drift = prototype_drift(self._previous_boundary_prototypes, prototypes)
+                matrix_labels, matrix = class_center_distance_matrix(
+                    prototypes, seen_classes
+                )
+                off_diagonal = matrix[~torch.eye(
+                    len(matrix_labels), dtype=torch.bool
+                )] if len(matrix_labels) > 1 else torch.empty(0)
+                matrix_summary = {
+                    "class_labels": matrix_labels,
+                    "shape": list(matrix.shape),
+                    "minimum_off_diagonal": float(off_diagonal.min()) if off_diagonal.numel() else None,
+                    "maximum_off_diagonal": float(off_diagonal.max()) if off_diagonal.numel() else None,
+                    "mean_off_diagonal": float(off_diagonal.mean()) if off_diagonal.numel() else None,
+                    "matrix_file": None,
+                }
+                if self.boundary_config["boundary_save_center_matrix"]:
+                    matrix_dir = os.path.join(self.save_folder, "boundary_matrices")
+                    os.makedirs(matrix_dir, exist_ok=True)
+                    matrix_name = f"class_center_task_{int(task)}.npy"
+                    np.save(os.path.join(matrix_dir, matrix_name), matrix.numpy())
+                    matrix_summary["matrix_file"] = os.path.join(
+                        "boundary_matrices", matrix_name
+                    )
+
+                record = {
+                    "task": int(task),
+                    "global_round": int(global_round),
+                    "num_seen_classes": len(seen_classes),
+                    "feature_extractor": (
+                        "BaseHeadSplit.get_proto: features=global_model.base(inputs); "
+                        "logits=global_model.head(features)"
+                    ),
+                    "prototype_source": (
+                        "bounded real-training exemplar cache through the current global classifier"
+                    ),
+                    "real_test": self._margin_diagnostic_summary(
+                        real["true_margins"], real["top_margins"]
+                    ),
+                    "synthetic_replay": self._margin_diagnostic_summary(
+                        synthetic_true_margins, synthetic_top_margins
+                    ),
+                    "prototype_drift": {
+                        "per_class_l2": {str(label): value for label, value in drift.items()},
+                        "mean_l2": float(np.mean(list(drift.values()))) if drift else None,
+                        "maximum_l2": max(drift.values()) if drift else None,
+                        "shared_class_count": len(drift),
+                    },
+                    "class_center_distance": matrix_summary,
+                }
+                self._current_boundary_prototypes = prototypes
+                self._previous_boundary_prototypes = {
+                    label: center.clone() for label, center in prototypes.items()
+                }
+                self.boundary_metrics["diagnostics"].append(record)
+                self._write_boundary_log()
+                print(
+                    "[Boundary Diagnostics] "
+                    f"task={task} real_margin={record['real_test']['true_class_margin']['mean']:.6f} "
+                    f"synthetic_margin={record['synthetic_replay']['true_class_margin']['mean']:.6f} "
+                    f"boundary_ratio={record['real_test']['true_class_margin']['boundary_sample_ratio']:.6f}"
+                )
+        except Exception as error:
+            print(f"[Boundary Diagnostics] skipped: {error}")
+
+    def _write_boundary_log(self):
+        if not self.offlog or self.boundary_metrics is None:
+            return
+        path = os.path.join(self.save_folder, "boundary_log.json")
+        payload = {
+            "mode": self.boundary_mode,
+            "diagnostics_enabled": self.boundary_diagnostics_enabled,
+            "margin_definition": "true_class_logit - maximum_other_class_logit",
+            "regularizer_consolidations": self.boundary_metrics["consolidations"],
+            "tasks": self.boundary_metrics["diagnostics"],
+        }
+        with open(path, mode="w") as file:
+            json.dump(payload, file, indent=2, sort_keys=True, allow_nan=False)
+            file.write("\n")
 
     def _record_boundary_robustness(self, task, global_round):
         """Evaluate real test data under FGSM/PGD without changing RNG or mode."""

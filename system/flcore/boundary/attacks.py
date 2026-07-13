@@ -13,6 +13,19 @@ BOUNDARY_CONFIG_DEFAULTS = {
     "density_tau": None,
     "boundary_robust_eval": True,
     "robust_eval_max_batches": None,
+    "boundary_diagnostics": True,
+    "boundary_margin_threshold": 0.0,
+    "boundary_margin_band": 0.1,
+    "boundary_histogram_bins": 20,
+    "boundary_histogram_range": [-5.0, 5.0],
+    "boundary_diagnostic_samples_per_class": 32,
+    "boundary_prototype_samples_per_class": 32,
+    "boundary_diagnostic_max_batches": None,
+    "boundary_diagnostic_max_samples_per_batch": None,
+    "boundary_save_center_matrix": False,
+    "margin_target": 1.0,
+    "margin_lambda": 0.1,
+    "prototype_feature_layer": "penultimate",
 }
 
 BOUNDARY_MODES = {

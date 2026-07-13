@@ -1,0 +1,67 @@
+# Reference configuration for the current Ours_v2 CIFAR-100 implementation.
+# Existing baseline fields mirror hparams/cifar100/Ours_v2_cifar100.json; the
+# journal simulation fields remain disabled for backward-compatible behavior.
+
+algorithm: Ours_v2
+dataset: CIFAR100
+num_classes: 100
+model: ResNet18
+model_str: resnet18
+device: cuda
+device_id: "0"
+
+log: true
+offlog: false
+wandb: false
+out_folder: out
+note: Ours_v2_Basic_Setup
+
+optimizer: adam
+batch_size: 128
+local_learning_rate: 0.05
+learning_rate_decay: true
+learning_rate_decay_gamma: 0.99
+
+join_ratio: 1.0
+random_join_ratio: false
+client_drop_rate: 0.0
+prev: 0
+times: 1
+
+global_rounds: 50
+local_epochs: 5
+eval_gap: 1
+time_threthold: 10000
+
+num_tasks: 5
+cpt: 20
+
+g_lr: 0.01
+g_steps: 2000
+replay_weight: 25
+nz: 256
+latent_dim: 256
+num_clients: 10
+kd: 0.5
+
+adv: 0.0
+bn: 1.0
+oh: 1.0
+gen_type: advanced
+generated_samples_per_class: 100
+
+# Journal simulation flags: disabled to preserve the current implementation.
+async_mode: false
+client_task_speed_distribution: fixed_groups
+max_task_lag: 0
+client_dropout_rate: 0.0
+partial_participation_rate: 1.0
+task_schedule_seed: 0
+reliability_mode: none
+boundary_mode: none
+robustness_mode: none
+model_heterogeneity: false
+client_model_pool:
+  - resnet18
+server_model: resnet18
+aggregation_mode: fedavg

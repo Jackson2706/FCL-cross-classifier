@@ -1,0 +1,26 @@
+# Journal simulation configuration defaults.
+#
+# These keys are intentionally not wired into system/main.py yet. Journal modules
+# should read them with getattr(args, "<key>", <default>) so legacy JSON configs
+# continue to follow the current Ours_v2 code path.
+
+# Asynchronous task scheduling is disabled in the legacy path. The distribution
+# value is retained as the future scheduler's default mode when async_mode is set.
+async_mode: false
+client_task_speed_distribution: fixed_groups
+max_task_lag: 0
+client_dropout_rate: 0.0
+partial_participation_rate: 1.0
+task_schedule_seed: 0
+
+# Journal reliability, boundary-preservation, and robustness modules are opt-in.
+reliability_mode: none
+boundary_mode: none
+robustness_mode: none
+
+# All clients currently share one ResNet-18 model and use parameter averaging.
+model_heterogeneity: false
+client_model_pool:
+  - resnet18
+server_model: resnet18
+aggregation_mode: fedavg

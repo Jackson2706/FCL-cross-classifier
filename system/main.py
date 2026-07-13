@@ -37,15 +37,18 @@ from flcore.trainmodel.mobilenet_v2 import *
 from flcore.trainmodel.models import *
 from flcore.trainmodel.transformer import *
 from flcore.trainmodel.vit_prompt_l2p import *
+from utils.seeding import seed_everything
 
 import wandb
 
 warnings.simplefilter("ignore")
-torch.manual_seed(0)
 
 
 def run(args):
-    
+    # Previously only Torch was seeded, leaving NumPy-driven client selection
+    # nondeterministic. Seed all training RNGs before any model/server is built.
+    args.seed = seed_everything(getattr(args, "seed", 0))
+
     if args.wandb:
         # Determine the run name based on whether --run_name was provided
         if hasattr(args, 'run_name') and args.run_name is not None:
@@ -303,6 +306,9 @@ if __name__ == "__main__":
 
     if "coreset" not in cfdct:
         cfdct['coreset'] = False
+
+    # Top-level reproducibility contract for legacy JSON configurations.
+    cfdct.setdefault('seed', 0)
 
     args = Namespace(**cfdct)
 

@@ -252,6 +252,7 @@ class OursV2(Server):
         self.set_clients(clientOursV2)
 
         async_mode = getattr(args, 'async_mode', False)
+        self.async_mode = bool(async_mode)
         scheduler_mode = (
             getattr(args, 'client_task_speed_distribution', 'fixed_groups')
             if async_mode else 'synchronous'
@@ -263,9 +264,16 @@ class OursV2(Server):
             mode=scheduler_mode,
             max_task_lag=getattr(args, 'max_task_lag', 0),
             client_dropout_rate=getattr(args, 'client_dropout_rate', 0.0),
+            permanent_dropout_rate=getattr(args, 'permanent_dropout_rate', 0.0),
             partial_participation_rate=getattr(args, 'partial_participation_rate', 1.0),
             seed=getattr(args, 'task_schedule_seed', 0),
+            num_speed_groups=getattr(args, 'num_speed_groups', 2),
+            speed_interval=getattr(args, 'speed_interval', [0.5, 1.0]),
+            custom_schedule_path=getattr(args, 'custom_schedule_path', None),
+            allow_task_jumps=getattr(args, 'allow_task_jumps', False),
         )
+        self._client_loaded_task = {client.id: 0 for client in self.clients}
+        self._evaluated_client_stages = set()
 
     def filter_anomalous_clients(self):
         """
@@ -309,6 +317,9 @@ class OursV2(Server):
         self.client_info_dict = safe_dict
 
     def train(self):
+        if self.async_mode:
+            return self._train_async()
+
         for task in self.task_scheduler.task_sequence():
             task_states = self.task_scheduler.state_for_round(task * max(1, self.global_rounds))
             print(f"\n--- Task {task} ---")
@@ -352,12 +363,119 @@ class OursV2(Server):
             self.send_models()
             self._write_metrics_summary()
 
+    def _train_async(self):
+        """Run asynchronous client clocks with interim global-clock consolidation.
+
+        INTERIM consolidation under async; proper completion-watermark
+        consolidation is Phase 2c — async results are not scientifically final
+        until then.
+        """
+
+        total_rounds = self.num_tasks * self.global_rounds
+        for global_round in range(total_rounds):
+            round_states = self.task_scheduler.state_for_round(global_round)
+            self._update_client_data(round_states)
+            self.selected_clients = [
+                client for client in self.clients
+                if round_states[client.id].active and not round_states[client.id].dropped
+            ]
+
+            if getattr(self.args, 'simulate_bad_clients', False):
+                bad_client_count = int(len(self.selected_clients) * 0.20)
+                for client in self.selected_clients[:bad_client_count]:
+                    print(f"[Simulate Attack] Injecting severe noise into client ID: {client.id}")
+                    for param in client.model.parameters():
+                        param.data += torch.randn_like(param.data) * 5.0
+
+            for client in self.selected_clients:
+                client.train(task=round_states[client.id].task_id)
+
+            self._receive_async_models()
+            if self.uploaded_models:
+                self.aggregate_parameters()
+            else:
+                print(f"[Async] Round {global_round}: no fresh uploads; global model unchanged.")
+            self.send_models()
+            global_stage = min(global_round // max(1, self.global_rounds), self.num_tasks - 1)
+            self.eval(task=global_stage, glob_iter=global_round, flag="global")
+            self._record_new_client_stage_metrics(round_states)
+
+            if (global_round + 1) % max(1, self.global_rounds) == 0:
+                print(
+                    "[Async][INTERIM] Consolidating on the global-clock boundary. "
+                    "Proper completion-watermark consolidation is Phase 2c; "
+                    "async results are not scientifically final until then."
+                )
+                if getattr(self.args, 'use_filter', True):
+                    self.filter_anomalous_clients()
+                with self.server_compute_timer.measure(global_stage):
+                    self.train_global_generator()
+                    self.train_global_classifier()
+                self.eval_task(task=global_stage, glob_iter=global_stage, flag="global")
+                self.send_models()
+                self._write_metrics_summary()
+
+        self._write_metrics_summary()
+
+    def _receive_async_models(self):
+        """Accept only fresh uploads and renormalize sample weights over them."""
+
+        self.uploaded_ids = []
+        self.uploaded_weights = []
+        self.uploaded_models = []
+        self.client_info_dict = {}
+        total_samples = sum(len(client.train_data) for client in self.selected_clients)
+        if total_samples == 0:
+            return
+        for client in self.selected_clients:
+            sample_count = len(client.train_data)
+            self.uploaded_ids.append(client.id)
+            self.uploaded_weights.append(sample_count / total_samples)
+            self.uploaded_models.append(client.model)
+            self.client_info_dict[client.id] = {
+                "model": copy.deepcopy(client.model),
+                "label": list(client.classes_so_far),
+            }
+        self.communication_accountant.record_uplink(
+            self.uploaded_models[0], len(self.uploaded_models)
+        )
+
+    def _record_new_client_stage_metrics(self, round_states):
+        """Evaluate tasks 0..s once, just after each client first reaches stage s."""
+
+        for client in self.clients:
+            stage = round_states[client.id].task_id
+            key = (client.id, stage)
+            if key in self._evaluated_client_stages:
+                continue
+            accuracies, sample_counts = [], []
+            for task_id in range(stage + 1):
+                correct, count = client.test_metrics(task=task_id)
+                accuracies.append(correct / count if count else 0.0)
+                sample_counts.append(count)
+            self.task_scheduler.record_client_stage_accuracy(
+                client.id, stage, accuracies, sample_counts
+            )
+            self._evaluated_client_stages.add(key)
+
     def _update_client_data(self, client_states):
         for i, client in enumerate(self.clients):
             state = client_states[client.id]
-            read_func = read_client_data_FCL_cifar100 if 'cifar100' in self.args.dataset.lower() else read_client_data_FCL_cifar10
-            train_data, label_info = read_func(i, task=state.task_id, classes_per_task=self.args.cpt, count_labels=True)
-            client.next_task(train_data, label_info)
+            loaded_task = self._client_loaded_task.get(client.id, client.current_task)
+            for next_task in range(loaded_task + 1, state.task_id + 1):
+                if 'cifar100' in self.args.dataset.lower():
+                    read_func = read_client_data_FCL_cifar100
+                elif 'cifar10' in self.args.dataset.lower():
+                    read_func = read_client_data_FCL_cifar10
+                elif 'imagenet1k' in self.args.dataset.lower():
+                    read_func = read_client_data_FCL_imagenet1k
+                else:
+                    raise NotImplementedError(f"Async task loading is unsupported for {self.args.dataset}")
+                train_data, label_info = read_func(
+                    i, task=next_task, classes_per_task=self.args.cpt, count_labels=True
+                )
+                client.next_task(train_data, label_info)
+                self._client_loaded_task[client.id] = next_task
 
     def train_global_generator(self):
         self.global_generator.train()

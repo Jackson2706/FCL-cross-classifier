@@ -17,7 +17,7 @@ class Client(object):
     """
 
     def __init__(self, args, id, train_data, **kwargs):
-        torch.manual_seed(0)
+        torch.manual_seed(getattr(args, "seed", 0))
         self.t_angle_after = 0
         self.device = args.device
 

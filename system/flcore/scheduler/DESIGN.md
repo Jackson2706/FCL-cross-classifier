@@ -1,5 +1,10 @@
 # Phase 2b asynchronous task semantics
 
+> **Phase 2b implementation note:** consolidation is intentionally INTERIM under
+> async. The existing generator/classifier consolidation still runs on the shared
+> global-clock boundary. Proper completion-watermark consolidation is Phase 2c;
+> async results are not scientifically final until then.
+
 Phase 2a exposes a scheduler boundary but deliberately executes only the legacy,
 synchronous clock. This document proposes the semantics to implement behind that
 boundary in Phase 2b. A schedule determines task availability and eligibility; it

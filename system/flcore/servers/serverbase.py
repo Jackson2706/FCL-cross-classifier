@@ -128,6 +128,7 @@ class Server(object):
 
             # Old JSON configs omit these fields; persist their effective defaults.
             resolved.update(self.async_config)
+            resolved.setdefault("seed", int(getattr(self.args, "seed", 0)))
 
             config_path = os.path.join(self.save_folder, "resolved_config.json")
             with open(config_path, mode="w") as file:
@@ -188,7 +189,12 @@ class Server(object):
             }
             scheduler = getattr(self, "task_scheduler", None)
             if scheduler is not None:
-                summary["async"] = scheduler.synchronous_metrics()
+                summary["async"] = scheduler.metrics()
+                if getattr(self.args, "async_mode", False):
+                    scheduler.save_schedule(
+                        os.path.join(self.save_folder, "async_schedule.json"),
+                        run_seed=getattr(self.args, "seed", 0),
+                    )
             summary_path = os.path.join(self.save_folder, "metrics_summary.json")
             with open(summary_path, mode="w") as file:
                 json.dump(summary, file, indent=2, sort_keys=True, allow_nan=False)
@@ -417,7 +423,7 @@ class Server(object):
                 "Global/Averaged Distance": self.distance_value,
                 "Global/Averaged GradNorm": self.norm_value,
             }
-            if self.args.tgm:
+            if self.args.tgm and self.selected_clients:
                 self.t_angle_after = statistics.mean(client.t_angle_after for client in self.selected_clients)
 
                 log_keys.update({

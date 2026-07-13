@@ -44,7 +44,7 @@ for gz_file in gz_files:
 
 # Delete extracted data files
 extracted_files = [
-    'dataset/cifar-100-python'
+    '/media/jackson/Data/FedGCC/dataset/cifar-100-python'
 ]
 
 for file_path in extracted_files:

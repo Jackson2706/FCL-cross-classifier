@@ -47,12 +47,20 @@ torch.manual_seed(0)
 def run(args):
     
     if args.wandb:
-        wandb.login(key="")
+        # Determine the run name based on whether --run_name was provided
+        if hasattr(args, 'run_name') and args.run_name is not None:
+            custom_run_name = args.run_name
+        else:
+            if args.algorithm == "Ours_v2":
+                custom_run_name = f"{args.num_clients}_{args.gen_type}_{args.generated_samples_per_class}samples-per-class_{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}_{args.note}" if args.note else f"{args.gen_type}_{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}"
+            else:
+                custom_run_name = f"{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}_{args.note}" if args.note else f"{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}"
+
         wandb.init(
-            project="",
-            entity="",
+            project="FCL",
+            entity="jackson2706",
             config=args, 
-            name=f"{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}_{args.note}" if args.note else f"{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}", 
+            name=custom_run_name, 
         )
 
     time_list = []
@@ -253,6 +261,13 @@ if __name__ == "__main__":
     parser.add_argument('--teval', action='store_true', help='Log Temporal Gradient')
     parser.add_argument('--pca_eval', action='store_true', help='Log PCA Gradient')
     parser.add_argument('--generated_samples_per_class', type=int, default=100, help='Number of generated samples per class for training the global classifier (only for Ours_v2)')
+    parser.add_argument('--gen_type', type=str, default='advanced', choices=['mlp', 'light_cnn', 'advanced', 'resnet'], help='Select generator complexity for ablation')
+    parser.add_argument('--num_clients', type=int, default=None, help='Number of clients (overrides config file)')
+    parser.add_argument('--simulate_bad_clients', type=bool, default=False, help='Whether to simulate bad clients by randomly flipping labels in their local datasets (only for Ours_v2)')
+    parser.add_argument('--use_filter', type=bool, default=False, help='Whether to use the filtering mechanism to exclude low-quality generated samples (only for Ours_v2)')
+    parser.add_argument('--filter_threshold', type=float, default=1.5, help='Confidence threshold for filtering generated samples (only for Ours_v2 with --use_filter)')
+    parser.add_argument('--run_name', type=str, default=None, help='Custom name for the run (overrides default naming scheme)')
+    parser.add_argument('--replay_ratio', type=float, default=1.0, help='Ratio of replayed samples to generated samples in the augmented dataset (only for Ours_v2)')
     args = parser.parse_args()
 
     with open(args.cfp, 'r') as f:
@@ -272,6 +287,13 @@ if __name__ == "__main__":
     cfdct['teval'] = args.teval
     cfdct['pca_eval'] = args.pca_eval
     cfdct['generated_samples_per_class'] = args.generated_samples_per_class
+    cfdct['gen_type'] = args.gen_type
+    # cfdct['num_clients'] = args.num_clients
+    cfdct['simulate_bad_clients'] = args.simulate_bad_clients
+    cfdct['use_filter'] = args.use_filter   
+    cfdct['filter_threshold'] = args.filter_threshold
+    cfdct['run_name'] = args.run_name
+    cfdct['replay_ratio'] = args.replay_ratio
     print(args.seval)
     print(args.teval)
     print(args.pca_eval)
@@ -291,4 +313,3 @@ if __name__ == "__main__":
         args.device = "cpu"
     print(args)
     run(args)
-

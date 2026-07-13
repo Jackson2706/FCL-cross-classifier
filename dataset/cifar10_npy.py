@@ -23,7 +23,7 @@ for img, label in testset:
     cifar10_classes[label].append(img.numpy())
 
 # Create output folder
-output_folder = "cifar10-classes"
+output_folder = "/media/jackson/Data/FedGCC/dataset/cifar10-classes"
 os.makedirs(output_folder, exist_ok=True)
 
 # Save each class as a .npy file

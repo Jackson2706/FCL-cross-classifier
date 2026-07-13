@@ -48,8 +48,7 @@ class clientOursV2(Client):
         train_loader = self.load_train_data(task=task)
         self.real_classes = set(self.current_labels)
         
-        # 2. Tạo augmented dataset (Đảm bảo trả về DataLoader, không phải Dataset thô)
-        # Nếu create_augmented_dataset trả về Dataset, hãy bọc nó:
+        # 2. Tạo augmented dataset
         augmented_loader = self.create_augmented_dataset(train_loader.dataset)
     
         self.model.train()
@@ -59,7 +58,11 @@ class clientOursV2(Client):
         scaler = GradScaler()
         
         for epoch in range(self.local_epochs):
-            for x, y in augmented_loader:
+            
+            # FIX: Added *_ to catch the 3rd variable (index) returned by ReplayDataset,
+            # while still working perfectly if the original train_data only returns 2 variables.
+            for x, y, *_ in augmented_loader:
+                
                 x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
                 
                 # Reset gradient TRƯỚC khi forward
@@ -74,11 +77,11 @@ class clientOursV2(Client):
                 scaler.step(self.optimizer)
                 scaler.update()
                 
-            # Update LR sau mỗi epoch (tùy thuộc vào loại scheduler bạn dùng)
-            self.learning_rate_scheduler.step()
+            # Update LR sau mỗi epoch
+            if hasattr(self, 'learning_rate_scheduler') and self.learning_rate_scheduler:
+                self.learning_rate_scheduler.step()
         
-        # Giải phóng VRAM sau khi train xong để client khác dùng
-        # self.model.cpu() # Chỉ bật nếu bạn có quá nhiều client và ít VRAM
+        # Giải phóng VRAM
         torch.cuda.empty_cache()
 
         self.train_time_cost['num_rounds'] += 1

@@ -192,6 +192,8 @@ class Client(object):
             train_data = read_client_data_FCL_cifar100(self.id, task=task, classes_per_task=self.args.cpt, count_labels=False, train=True)
         elif self.args.dataset == 'CIFAR10':
             train_data = read_client_data_FCL_cifar10(self.id, task=task, classes_per_task=self.args.cpt, count_labels=False, train=True)
+        elif self.args.dataset == "WILDS":
+            train_data = read_client_data_FCL_wilds(index=self.id, num_clients=self.args.num_clients, task=task, count_labels=False, train=True)
         
         return DataLoader(train_data, batch_size=batch_size, shuffle=True, drop_last=True)
 
@@ -205,7 +207,8 @@ class Client(object):
             test_data = read_client_data_FCL_cifar100(self.id, task=task, classes_per_task=self.args.cpt, count_labels=False, train=False)
         elif self.args.dataset == 'CIFAR10':
             test_data = read_client_data_FCL_cifar10(self.id, task=task, classes_per_task=self.args.cpt, count_labels=False, train=False)
-
+        elif self.args.dataset == "WILDS":
+            test_data = read_client_data_FCL_wilds(index=self.id, num_clients=self.args.num_clients, task=task, count_labels=False, train=False)
         return DataLoader(test_data, batch_size, drop_last=False, shuffle=True)  
 
     def set_parameters(self, model):

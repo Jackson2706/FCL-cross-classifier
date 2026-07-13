@@ -1,7 +1,7 @@
 {
     "algorithm": "Ours_v2",
-    "dataset": "CIFAR100",
-    "num_classes": 100,
+    "dataset": "WILDS",
+    "num_classes": 2,
     "model": "ResNet18",
     "model_str": "resnet18",
     "device": "cuda",
@@ -14,12 +14,13 @@
     "note": "Ours_v2_Basic_Setup",
 
     "optimizer": "adam",
-    "batch_size": 128,
+    "batch_size": 64,
     "local_learning_rate": 0.05,
     "learning_rate_decay": true,
     "learning_rate_decay_gamma": 0.99,
 
-    "join_ratio": 1.0,
+    "num_clients": 50,
+    "join_ratio": 0.2,
     "random_join_ratio": false,
     "client_drop_rate": 0.0,
     "prev": 0,
@@ -38,12 +39,10 @@
     "replay_weight": 25,
     "nz": 256,
     "latent_dim": 256,
-    "num_clients": 10,
+
     "kd": 0.5,
     
     "adv": 0.0, 
     "bn": 1.0,
-    "oh": 1.0,
-    "gen_type": "advanced",
-    "generated_samples_per_class": 100
+    "oh": 1.0
 }

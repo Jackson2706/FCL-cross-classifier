@@ -26,6 +26,6 @@ num_classes = 10
 
 permuted_array = generate_unique_permutations_flat(client_num=num_clients, classes=num_classes)
 
-np.save("/root/projects/FCL/dataset/class_order/class_order_cifar10.npy", permuted_array)
+np.save("/media/jackson/Data/FedGCC/dataset/class_order/class_order_cifar10.npy", permuted_array)
 
 print(permuted_array.shape)  # (100, 10000)

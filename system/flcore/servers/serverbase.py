@@ -16,6 +16,7 @@ from flcore.metrics.accounting import CommunicationAccountant, ServerComputeTime
 from flcore.metrics.average_anytime_accuracy import metric_average_anytime_accuracy
 from flcore.metrics.average_forgetting import metric_average_forgetting
 from flcore.metrics.backward_transfer import metric_backward_transfer
+from flcore.scheduler.task_scheduler import ASYNC_CONFIG_DEFAULTS
 from utils.data_utils import *
 
 import wandb
@@ -65,14 +66,14 @@ class Server(object):
         self.communication_accountant = CommunicationAccountant()
         self.server_compute_timer = ServerComputeTimer()
 
-        if self.args.dataset == 'IMAGENET1k':
-            self.N_TASKS = 5
-        elif self.args.dataset == 'CIFAR100':
-            self.N_TASKS = 5
-        elif self.args.dataset == 'CIFAR10':
-            self.N_TASKS = 5
-        if self.args.nt is not None:
-            self.N_TASKS = self.args.num_classes // self.args.cpt
+        self.async_config = {
+            key: getattr(args, key, default)
+            for key, default in ASYNC_CONFIG_DEFAULTS.items()
+        }
+
+        self.num_tasks = self._resolve_num_tasks(args)
+        # Compatibility alias for servers not yet migrated to the canonical name.
+        self.N_TASKS = self.num_tasks
 
         # FCL
         self.task_dict = {}
@@ -86,6 +87,29 @@ class Server(object):
         self.file_name = f"{self.args.algorithm}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
 
         self._write_resolved_config()
+
+    @staticmethod
+    def _resolve_num_tasks(args):
+        """Return the canonical total task count used by training and metrics.
+
+        ``args.num_tasks`` is authoritative when present.  Legacy configurations
+        without it fall back to the historical dataset default (five for CIFAR-10,
+        CIFAR-100, and ImageNet1k), then to ``num_classes // cpt`` when available.
+        Accuracy matrices, forgetting, BWT, and AAA must all use this same count.
+        """
+
+        configured = getattr(args, "num_tasks", None)
+        if configured is not None:
+            total = int(configured)
+        elif getattr(args, "dataset", None) in {"CIFAR10", "CIFAR100", "IMAGENET1k"}:
+            total = 5
+        elif getattr(args, "cpt", 0):
+            total = int(args.num_classes) // int(args.cpt)
+        else:
+            raise ValueError("num_tasks is required for this dataset")
+        if total <= 0:
+            raise ValueError("num_tasks must be positive")
+        return total
 
     def _write_resolved_config(self):
         """Persist the JSON-serializable portion of args for reproducibility."""
@@ -101,6 +125,9 @@ class Server(object):
                 except (TypeError, ValueError):
                     continue
                 resolved[key] = value
+
+            # Old JSON configs omit these fields; persist their effective defaults.
+            resolved.update(self.async_config)
 
             config_path = os.path.join(self.save_folder, "resolved_config.json")
             with open(config_path, mode="w") as file:
@@ -159,6 +186,9 @@ class Server(object):
                 "total_communication_mb": communication["total_mb"],
                 "server_compute_seconds": server_compute,
             }
+            scheduler = getattr(self, "task_scheduler", None)
+            if scheduler is not None:
+                summary["async"] = scheduler.synchronous_metrics()
             summary_path = os.path.join(self.save_folder, "metrics_summary.json")
             with open(summary_path, mode="w") as file:
                 json.dump(summary, file, indent=2, sort_keys=True, allow_nan=False)
@@ -431,7 +461,7 @@ class Server(object):
     def eval_task(self, task, glob_iter, flag):
         accuracy_on_all_task = []
 
-        for t in range(self.N_TASKS):
+        for t in range(self.num_tasks):
             stats = self.test_metrics(task=t, glob_iter=glob_iter, flag="off")
             test_acc = sum(stats[2]) * 1.0 / sum(stats[1])
             accuracy_on_all_task.append(test_acc)
@@ -447,7 +477,7 @@ class Server(object):
             subdir = os.path.join(self.save_folder, "Local")
             log_key = "Local/Averaged Forgetting"
 
-        forgetting = metric_average_forgetting(int(task%self.N_TASKS), accuracy_matrix)
+        forgetting = metric_average_forgetting(int(task % self.num_tasks), accuracy_matrix)
 
         if self.args.wandb:
             wandb.log({log_key: forgetting}, step=glob_iter)
@@ -468,7 +498,7 @@ class Server(object):
     def eval_task_(self, task, glob_iter, flag):
         accuracy_on_all_task = []
 
-        for t in range(self.N_TASKS):
+        for t in range(self.num_tasks):
             stats = self.test_metrics_(task=t, glob_iter=glob_iter, flag="off")
             test_acc = sum(stats[2]) * 1.0 / sum(stats[1])
             accuracy_on_all_task.append(test_acc)
@@ -484,7 +514,7 @@ class Server(object):
             subdir = os.path.join(self.save_folder, "Local")
             log_key = "Local/Averaged Forgetting"
 
-        forgetting = metric_average_forgetting(int(task%self.N_TASKS), accuracy_matrix)
+        forgetting = metric_average_forgetting(int(task % self.num_tasks), accuracy_matrix)
 
         if self.args.wandb:
             wandb.log({log_key: forgetting}, step=glob_iter)

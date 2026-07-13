@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 from flcore.clients.client_ourv2 import clientOursV2
 from flcore.servers.serverbase import Server
+from flcore.scheduler.task_scheduler import TaskScheduler
 from torch import nn, optim
 from torch.nn.utils import spectral_norm
 from torchvision.utils import save_image
@@ -250,6 +251,22 @@ class OursV2(Server):
         self.prev_generator = None
         self.set_clients(clientOursV2)
 
+        async_mode = getattr(args, 'async_mode', False)
+        scheduler_mode = (
+            getattr(args, 'client_task_speed_distribution', 'fixed_groups')
+            if async_mode else 'synchronous'
+        )
+        self.task_scheduler = TaskScheduler(
+            num_clients=self.num_clients,
+            num_tasks=self.num_tasks,
+            rounds_per_task=self.global_rounds,
+            mode=scheduler_mode,
+            max_task_lag=getattr(args, 'max_task_lag', 0),
+            client_dropout_rate=getattr(args, 'client_dropout_rate', 0.0),
+            partial_participation_rate=getattr(args, 'partial_participation_rate', 1.0),
+            seed=getattr(args, 'task_schedule_seed', 0),
+        )
+
     def filter_anomalous_clients(self):
         """
         Filters out corrupted or low-quality client classifiers using L2 weight divergence
@@ -292,12 +309,15 @@ class OursV2(Server):
         self.client_info_dict = safe_dict
 
     def train(self):
-        for task in range(self.args.num_tasks):
+        for task in self.task_scheduler.task_sequence():
+            task_states = self.task_scheduler.state_for_round(task * max(1, self.global_rounds))
             print(f"\n--- Task {task} ---")
             if task > 0:
-                self._update_client_data(task)
+                self._update_client_data(task_states)
 
             for i in range(self.global_rounds):
+                global_round = i + task * self.global_rounds
+                round_states = self.task_scheduler.state_for_round(global_round)
                 self.selected_clients = self.select_clients()
                 
                 # SIMULATE ATTACK/NOISE: Inject massive noise into the first 2 selected clients
@@ -310,12 +330,14 @@ class OursV2(Server):
                             param.data += torch.randn_like(param.data) * 5.0 # Massive noise
                 
                 for client in self.selected_clients:
-                    client.train(task=task)
+                    client_state = round_states[client.id]
+                    if client_state.active and not client_state.dropped:
+                        client.train(task=client_state.task_id)
                 
                 self.receive_models()
                 self.aggregate_parameters()
                 self.send_models()
-                self.eval(task=task, glob_iter=i + task*self.global_rounds, flag="global")
+                self.eval(task=task, glob_iter=global_round, flag="global")
 
             # --- NEW: Filter anomalous client classifiers BEFORE Coplay ---
             if getattr(self.args, 'use_filter', True):
@@ -330,10 +352,11 @@ class OursV2(Server):
             self.send_models()
             self._write_metrics_summary()
 
-    def _update_client_data(self, task):
+    def _update_client_data(self, client_states):
         for i, client in enumerate(self.clients):
+            state = client_states[client.id]
             read_func = read_client_data_FCL_cifar100 if 'cifar100' in self.args.dataset.lower() else read_client_data_FCL_cifar10
-            train_data, label_info = read_func(i, task=task, classes_per_task=self.args.cpt, count_labels=True)
+            train_data, label_info = read_func(i, task=state.task_id, classes_per_task=self.args.cpt, count_labels=True)
             client.next_task(train_data, label_info)
 
     def train_global_generator(self):

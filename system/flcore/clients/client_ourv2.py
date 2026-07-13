@@ -46,6 +46,15 @@ class clientOursV2(Client):
     def train(self, task=None):
         # 1. Load data nhẹ nhàng
         train_loader = self.load_train_data(task=task)
+        scenario = getattr(self, "robustness_scenario", None)
+        if scenario is not None and scenario.enabled:
+            attacked_data = scenario.adapt_dataset(
+                self.id, train_loader.dataset, self.current_task if task is None else task
+            )
+            train_loader = DataLoader(
+                attacked_data, batch_size=self.batch_size, shuffle=True,
+                drop_last=train_loader.drop_last,
+            )
         self.real_classes = set(self.current_labels)
         
         # 2. Tạo augmented dataset

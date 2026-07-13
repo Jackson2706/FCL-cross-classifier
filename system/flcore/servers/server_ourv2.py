@@ -35,6 +35,12 @@ from flcore.reliability.objectives import (
 )
 from flcore.reliability.scorer import ReliabilityScorer
 from flcore.reliability.signals import bn_feature_distance
+from flcore.robustness.privacy import (
+    membership_inference_proxy,
+    memorization_summary,
+    nearest_neighbor_distances,
+)
+from flcore.robustness.scenarios import RobustnessScenario
 from flcore.scheduler.consolidation import ConsolidationManager
 from flcore.servers.serverbase import Server
 from flcore.scheduler.task_scheduler import TaskScheduler
@@ -252,6 +258,7 @@ class OursV2(Server):
         # New argument for the robustness filter
         self.filter_threshold = getattr(args, 'filter_threshold', 1.5)
         self.client_trust = {}
+        self.last_client_trust_all = {}
         reliability_cfg = {
             key: getattr(args, key, default)
             for key, default in self.reliability_config.items()
@@ -317,6 +324,19 @@ class OursV2(Server):
         
         self.prev_generator = None
         self.set_clients(clientOursV2)
+        self.robustness_scenario = RobustnessScenario(
+            self.num_clients, self.num_classes, seed=getattr(args, "seed", 0),
+            **self.robustness_config,
+        )
+        if self.robustness_scenario.enabled:
+            print(
+                "[Robustness] modes="
+                f"{sorted(self.robustness_scenario.modes)} corrupted_clients="
+                f"{list(self.robustness_scenario.corrupted_client_ids)}"
+            )
+            for client in self.clients:
+                client.robustness_scenario = self.robustness_scenario
+        self._privacy_records = []
 
         async_mode = getattr(args, 'async_mode', False)
         self.async_mode = bool(async_mode)
@@ -396,6 +416,7 @@ class OursV2(Server):
             
         median_div = torch.median(torch.tensor(div_values)).item()
         self._set_client_trust(divergences, median_div)
+        self.last_client_trust_all = dict(self.client_trust)
         threshold = median_div * self.filter_threshold
         
         # Filter clients
@@ -489,6 +510,7 @@ class OursV2(Server):
             with self.server_compute_timer.measure(task):
                 self.train_global_generator()
                 self.train_global_classifier()
+            self._record_privacy_proxies(task)
             self._record_boundary_diagnostics(task=task, global_round=global_round)
             self._record_calibration(task=task, global_round=global_round)
             self._record_boundary_robustness(task=task, global_round=global_round)
@@ -564,10 +586,14 @@ class OursV2(Server):
     def _cache_async_task_upload(self, client, task_id):
         """Retain the local upload before the next global broadcast replaces it."""
 
+        cached_model = (
+            self.robustness_scenario.corrupt_upload(client.id, client.model)
+            if self.robustness_scenario.enabled else copy.deepcopy(client.model)
+        )
         self._async_last_task_upload[client.id] = {
             "client_id": client.id,
             "task_id": int(task_id),
-            "model": copy.deepcopy(client.model),
+            "model": cached_model,
             "class_labels": list(client.task_dict[int(task_id)]),
             "sample_count": len(client.train_data),
         }
@@ -618,6 +644,10 @@ class OursV2(Server):
                     self.train_global_classifier(
                         seen_classes=event.globally_consolidated_classes
                     )
+                self._record_privacy_proxies(
+                    event.boundary_k,
+                    seen_classes=event.globally_consolidated_classes,
+                )
                 self._record_boundary_diagnostics(
                     task=event.boundary_k, global_round=global_round,
                     seen_classes=event.globally_consolidated_classes,
@@ -652,9 +682,13 @@ class OursV2(Server):
             sample_count = len(client.train_data)
             self.uploaded_ids.append(client.id)
             self.uploaded_weights.append(sample_count / total_samples)
-            self.uploaded_models.append(client.model)
+            uploaded_model = (
+                self.robustness_scenario.corrupt_upload(client.id, client.model)
+                if self.robustness_scenario.enabled else client.model
+            )
+            self.uploaded_models.append(uploaded_model)
             self.client_info_dict[client.id] = {
-                "model": copy.deepcopy(client.model),
+                "model": copy.deepcopy(uploaded_model),
                 "label": list(client.classes_so_far),
             }
         self.communication_accountant.record_uplink(
@@ -735,12 +769,15 @@ class OursV2(Server):
                 total_ce, total_bn, valid_t = 0, 0, 0
 
                 # Loop runs over the filtered safe dictionary!
-                for _, info in self.client_info_dict.items():
+                for client_id, info in self.client_info_dict.items():
                     mask = np.isin(labels.cpu().numpy(), info["label"])
                     if mask.sum() > 0:
                         valid_t += 1
                         m_idx = torch.tensor(mask, device=self.device)
                         preds = info["model"].eval().to(self.device)(gen_imgs[m_idx])
+                        preds = self.robustness_scenario.teacher_logits(
+                            client_id, preds, labels[m_idx]
+                        )
                         total_ce += criterion_ce(preds, labels[m_idx])
                         if mask.sum() >= MIN_BN_SAMPLES:
                             total_bn += self.get_bn_loss(info["model"], gen_imgs[m_idx])
@@ -797,14 +834,21 @@ class OursV2(Server):
                     relevant_labels = labels[mask]
                     teacher = info["model"].eval().to(self.device)
                     teacher_logits = teacher(relevant_imgs)
+                    teacher_logits = self.robustness_scenario.teacher_logits(
+                        client_id, teacher_logits, relevant_labels
+                    )
                     student_logits = self.global_model(relevant_imgs)
 
                     with torch.no_grad():
                         score_logits = teacher_logits.detach()
                         if self.reliability_scorer.mode == "mutual_information":
                             score_logits = torch.stack([
-                                other["model"].eval().to(self.device)(relevant_imgs)
-                                for other in self.client_info_dict.values()
+                                self.robustness_scenario.teacher_logits(
+                                    other_id,
+                                    other["model"].eval().to(self.device)(relevant_imgs),
+                                    relevant_labels,
+                                )
+                                for other_id, other in self.client_info_dict.items()
                             ], dim=0)
                         bn_distance = None
                         if self.reliability_scorer.mode in {
@@ -910,7 +954,9 @@ class OursV2(Server):
         teacher_logits = []
         for client_id in teacher_ids:
             teacher = self.client_info_dict[client_id]["model"].eval().to(self.device)
-            teacher_logits.append(teacher(imgs))
+            teacher_logits.append(self.robustness_scenario.teacher_logits(
+                client_id, teacher(imgs), labels
+            ))
         ensemble = torch.stack(teacher_logits, dim=0)
 
         target_probability = torch.log_softmax(ensemble, dim=-1).exp().gather(
@@ -1448,7 +1494,12 @@ class OursV2(Server):
             with torch.no_grad():
                 for test_task in range(min(int(task) + 1, self.num_tasks)):
                     for client in self.clients:
-                        for inputs, targets in client.load_test_data(task=test_task):
+                        for batch_index, (inputs, targets) in enumerate(
+                            client.load_test_data(task=test_task)
+                        ):
+                            max_batches = getattr(self.args, "ece_max_batches", None)
+                            if max_batches is not None and batch_index >= int(max_batches):
+                                break
                             if isinstance(inputs, list):
                                 inputs[0] = inputs[0].to(self.device)
                             else:
@@ -1485,6 +1536,94 @@ class OursV2(Server):
             if cuda_states is not None:
                 torch.cuda.set_rng_state_all(cuda_states)
 
+    def _record_privacy_proxies(self, task, seen_classes=None):
+        """Persist bounded, read-only heuristic privacy-risk measurements."""
+
+        if not (self.offlog and self.robustness_config["privacy_proxies"]):
+            return
+        cap = max(1, int(self.robustness_config["privacy_max_samples"]))
+        seen_classes = self.get_seen_classes() if seen_classes is None else list(seen_classes)
+        if not seen_classes:
+            return
+        try:
+            with preserve_diagnostic_state(self.global_model, self.global_generator):
+                self.global_model.eval()
+                self.global_generator.eval()
+                real_images, real_targets = [], []
+                heldout_images, heldout_targets = [], []
+                for client in self.clients:
+                    for index in range(len(client.train_data)):
+                        if len(real_targets) >= cap:
+                            break
+                        item = client.train_data[index]
+                        image = item[0][0] if isinstance(item[0], list) else item[0]
+                        real_images.append(torch.as_tensor(image).detach().cpu())
+                        real_targets.append(int(item[1]))
+                    if len(real_targets) >= cap:
+                        break
+                for client in self.clients:
+                    loader = client.load_test_data(task=min(int(task), self.num_tasks - 1))
+                    for inputs, targets in loader:
+                        inputs = inputs[0] if isinstance(inputs, list) else inputs
+                        remaining = cap - len(heldout_targets)
+                        if remaining <= 0:
+                            break
+                        heldout_images.extend(inputs[:remaining].detach().cpu())
+                        heldout_targets.extend(int(value) for value in targets[:remaining])
+                    if len(heldout_targets) >= cap:
+                        break
+                if not real_images:
+                    return
+
+                sample_count = min(cap, max(2, len(real_images)))
+                labels = torch.tensor(
+                    [seen_classes[index % len(seen_classes)] for index in range(sample_count)],
+                    dtype=torch.long, device=self.device,
+                )
+                with torch.no_grad():
+                    noise = torch.randn(sample_count, self.nz, device=self.device)
+                    generated = self.global_generator(noise, labels).detach().cpu()
+                real = torch.stack(real_images[:cap])
+                distances = nearest_neighbor_distances(generated, real)
+                record = {
+                    "task": int(task),
+                    "proxy_notice": (
+                        "Heuristic privacy-risk proxies only; no formal privacy guarantee."
+                    ),
+                    "nn_distance": {
+                        "space": "normalized_input_pixel_l2",
+                        **memorization_summary(
+                            distances,
+                            self.robustness_config["memorization_tau"],
+                        ),
+                    },
+                }
+                record["generator_memorization_score"] = record["nn_distance"][
+                    "generator_memorization_score"
+                ]
+                if heldout_images and heldout_targets:
+                    with torch.no_grad():
+                        member_logits = self.global_model(real.to(self.device))
+                        heldout = torch.stack(heldout_images[:cap])
+                        heldout_logits = self.global_model(heldout.to(self.device))
+                    record["membership_inference_proxy"] = membership_inference_proxy(
+                        member_logits.cpu(), torch.tensor(real_targets[:len(real)]),
+                        heldout_logits.cpu(), torch.tensor(heldout_targets[:len(heldout)]),
+                    )
+                self._privacy_records.append(record)
+            path = os.path.join(self.save_folder, "privacy_log.json")
+            with open(path, "w") as file:
+                json.dump({"consolidations": self._privacy_records}, file,
+                          indent=2, sort_keys=True, allow_nan=False)
+                file.write("\n")
+            print(
+                "[Privacy proxy] input-NN min="
+                f"{record['nn_distance']['min']} score="
+                f"{record['generator_memorization_score']} (heuristic only)"
+            )
+        except Exception as error:
+            print(f"[Privacy proxy] skipped: {error}")
+
     def visualize_synthetic_data(self, task):
         debug_dir = os.path.join("output_debug", self.args.dataset, f"task_{task}")
         os.makedirs(debug_dir, exist_ok=True)
@@ -1515,8 +1654,22 @@ class OursV2(Server):
             print(f"[Vis] Saved all-class grid to {save_path}")
 
     def receive_models(self):
-        self.client_info_dict = {c.id: {"model": copy.deepcopy(c.model), "label": list(c.classes_so_far)} for c in self.selected_clients}
-        super().receive_models()
+        if not self.robustness_scenario.enabled:
+            self.client_info_dict = {c.id: {"model": copy.deepcopy(c.model), "label": list(c.classes_so_far)} for c in self.selected_clients}
+            super().receive_models()
+        else:
+            super().receive_models()
+            attacked_models = []
+            self.client_info_dict = {}
+            for client_id, model in zip(self.uploaded_ids, self.uploaded_models):
+                attacked = self.robustness_scenario.corrupt_upload(client_id, model)
+                attacked_models.append(attacked)
+                client = next(c for c in self.selected_clients if c.id == client_id)
+                self.client_info_dict[client_id] = {
+                    "model": copy.deepcopy(attacked),
+                    "label": list(client.classes_so_far),
+                }
+            self.uploaded_models = attacked_models
         model = self.uploaded_models[0] if self.uploaded_models else self.global_model
         self.communication_accountant.record_uplink(model, len(self.uploaded_models))
 

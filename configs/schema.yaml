@@ -22,6 +22,8 @@ reliability_trust_floor: 0.0
 reliability_accept_threshold: 0.0
 calibration_temperature: 1.0
 ece_bins: 15
+# Optional development/smoke cap per client and task; null evaluates all samples.
+ece_max_batches: null
 
 # Generator-side paper objective is opt-in. kd_weight defaults to the legacy
 # kd value (0.5) when omitted; kd retains its inverse-temperature convention.
@@ -57,6 +59,19 @@ margin_target: 1.0
 margin_lambda: 0.1
 prototype_feature_layer: penultimate
 robustness_mode: none
+corrupted_client_fraction: 0.0
+label_noise_rate: 0.0
+upload_noise_std: 5.0
+bn_noise_std: 0.0
+malicious_confidence_attack: false
+malicious_logit_value: 20.0
+extreme_imbalance_majority_fraction: 0.95
+single_class_expert_label: null
+robustness_seed: null
+# Heuristic, read-only warning signals; these provide no formal privacy claim.
+privacy_proxies: false
+memorization_tau: null
+privacy_max_samples: 256
 
 # All clients currently share one ResNet-18 model and use parameter averaging.
 model_heterogeneity: false

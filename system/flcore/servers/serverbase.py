@@ -20,6 +20,7 @@ from flcore.scheduler.task_scheduler import ASYNC_CONFIG_DEFAULTS
 from flcore.scheduler.consolidation import CONSOLIDATION_CONFIG_DEFAULTS
 from flcore.reliability.scorer import RELIABILITY_CONFIG_DEFAULTS
 from flcore.boundary.attacks import BOUNDARY_CONFIG_DEFAULTS
+from flcore.robustness.scenarios import ROBUSTNESS_CONFIG_DEFAULTS
 from utils.data_utils import *
 
 import wandb
@@ -84,6 +85,10 @@ class Server(object):
             key: getattr(args, key, default)
             for key, default in BOUNDARY_CONFIG_DEFAULTS.items()
         }
+        self.robustness_config = {
+            key: getattr(args, key, default)
+            for key, default in ROBUSTNESS_CONFIG_DEFAULTS.items()
+        }
 
         self.num_tasks = self._resolve_num_tasks(args)
         # Compatibility alias for servers not yet migrated to the canonical name.
@@ -144,6 +149,7 @@ class Server(object):
             resolved.update(self.async_config)
             resolved.update(self.reliability_config)
             resolved.update(self.boundary_config)
+            resolved.update(self.robustness_config)
             resolved.setdefault(
                 "generator_distillation",
                 bool(getattr(self.args, "generator_distillation", False)),
@@ -232,6 +238,13 @@ class Server(object):
             boundary = getattr(self, "boundary_metrics", None)
             if boundary:
                 summary.setdefault("robustness", {})["boundary"] = boundary
+            scenario = getattr(self, "robustness_scenario", None)
+            if scenario is not None and scenario.enabled:
+                summary.setdefault("robustness", {})["attacks"] = scenario.summary(
+                    getattr(self, "last_client_trust_all", {})
+                    or getattr(self, "client_trust", {}),
+                    getattr(self, "client_info_dict", {}).keys(),
+                )
             summary_path = os.path.join(self.save_folder, "metrics_summary.json")
             with open(summary_path, mode="w") as file:
                 json.dump(summary, file, indent=2, sort_keys=True, allow_nan=False)

@@ -1,6 +1,7 @@
 import copy
 import csv
 import gc
+import json
 import os
 import random
 import shutil
@@ -11,7 +12,10 @@ from datetime import datetime
 import numpy as np
 import torch
 import torch.nn.functional as F
+from flcore.metrics.accounting import CommunicationAccountant, ServerComputeTimer
+from flcore.metrics.average_anytime_accuracy import metric_average_anytime_accuracy
 from flcore.metrics.average_forgetting import metric_average_forgetting
+from flcore.metrics.backward_transfer import metric_backward_transfer
 from utils.data_utils import *
 
 import wandb
@@ -58,6 +62,8 @@ class Server(object):
 
         self.global_accuracy_matrix = []
         self.local_accuracy_matrix = []
+        self.communication_accountant = CommunicationAccountant()
+        self.server_compute_timer = ServerComputeTimer()
 
         if self.args.dataset == 'IMAGENET1k':
             self.N_TASKS = 5
@@ -79,6 +85,87 @@ class Server(object):
 
         self.file_name = f"{self.args.algorithm}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
 
+        self._write_resolved_config()
+
+    def _write_resolved_config(self):
+        """Persist the JSON-serializable portion of args for reproducibility."""
+        if not self.offlog:
+            return
+        try:
+            resolved = {}
+            for key, value in vars(self.args).items():
+                if key == "model":
+                    continue
+                try:
+                    json.dumps(value, allow_nan=False)
+                except (TypeError, ValueError):
+                    continue
+                resolved[key] = value
+
+            config_path = os.path.join(self.save_folder, "resolved_config.json")
+            with open(config_path, mode="w") as file:
+                json.dump(resolved, file, indent=2, sort_keys=True, allow_nan=False)
+                file.write("\n")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _summarize_accuracy_matrix(accuracy_matrix):
+        if not accuracy_matrix:
+            return {
+                "average_accuracy": None,
+                "forgetting": None,
+                "backward_transfer": None,
+                "average_anytime_accuracy": None,
+            }
+
+        try:
+            stage = len(accuracy_matrix) - 1
+            latest_row = accuracy_matrix[-1]
+            seen_values = [
+                float(value)
+                for value in latest_row[: stage + 1]
+                if np.isfinite(value)
+            ]
+            average_accuracy = float(np.mean(seen_values)) if seen_values else None
+            forgetting = float(metric_average_forgetting(stage, accuracy_matrix))
+            bwt = float(metric_backward_transfer(accuracy_matrix))
+            aaa = float(metric_average_anytime_accuracy(accuracy_matrix))
+            return {
+                "average_accuracy": average_accuracy,
+                "forgetting": forgetting,
+                "backward_transfer": bwt,
+                "average_anytime_accuracy": aaa,
+            }
+        except Exception:
+            return {
+                "average_accuracy": None,
+                "forgetting": None,
+                "backward_transfer": None,
+                "average_anytime_accuracy": None,
+            }
+
+    def _write_metrics_summary(self):
+        """Write additive machine-readable metrics without affecting CSV logs."""
+        if not self.offlog:
+            return
+        try:
+            communication = self.communication_accountant.as_dict()
+            server_compute = self.server_compute_timer.as_dict()
+            summary = {
+                "global": self._summarize_accuracy_matrix(self.global_accuracy_matrix),
+                "local": self._summarize_accuracy_matrix(self.local_accuracy_matrix),
+                "communication": communication,
+                "total_communication_mb": communication["total_mb"],
+                "server_compute_seconds": server_compute,
+            }
+            summary_path = os.path.join(self.save_folder, "metrics_summary.json")
+            with open(summary_path, mode="w") as file:
+                json.dump(summary, file, indent=2, sort_keys=True, allow_nan=False)
+                file.write("\n")
+        except Exception:
+            pass
+
     def set_clients(self, clientObj):
         for i in range(self.num_clients):
             print(f"Creating client {i} ...")
@@ -88,6 +175,8 @@ class Server(object):
                 train_data, label_info = read_client_data_FCL_cifar100(i, task=0, classes_per_task=self.args.cpt, count_labels=True)
             elif self.args.dataset == 'CIFAR10':
                 train_data, label_info = read_client_data_FCL_cifar10(i , task=0, classes_per_task=self.args.cpt, count_labels=True)
+            elif self.args.dataset == "WILDS":
+                train_data, label_info = read_client_data_FCL_wilds(index=i, num_clients=self.num_clients, task=0, count_labels=True)
             else:
                 raise NotImplementedError("Not supported dataset")
             print(label_info)
@@ -373,6 +462,8 @@ class Server(object):
                 writer = csv.writer(file)
                 writer.writerows(accuracy_matrix)
 
+        self._write_metrics_summary()
+
     # evaluate after end 1 task
     def eval_task_(self, task, glob_iter, flag):
         accuracy_on_all_task = []
@@ -407,6 +498,8 @@ class Server(object):
             with open(csv_filename, mode="w", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerows(accuracy_matrix)
+
+        self._write_metrics_summary()
 
     def assign_unique_tasks(self):
         # Convert lists to sets of tuples for easy comparison

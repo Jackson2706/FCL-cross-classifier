@@ -1,7 +1,6 @@
 import copy
+import math
 import os
-import time
-
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -45,6 +44,63 @@ def denormalize(tensor, mean, std):
         t.mul_(s).add_(m)
     return torch.clamp(tensor, 0, 1)
 
+
+class Critic(nn.Module):
+    def __init__(self, nc=3, ndf=64, num_classes=10, img_size=32):
+        super(Critic, self).__init__()
+        self.img_size = img_size
+        self.label_embedding = nn.Embedding(num_classes, img_size * img_size)
+        self.main = nn.Sequential(
+            spectral_norm(nn.Conv2d(nc + 1, ndf, 4, 2, 1)),
+            nn.LeakyReLU(0.2, inplace=True),
+            spectral_norm(nn.Conv2d(ndf, ndf * 2, 4, 2, 1)),
+            nn.BatchNorm2d(ndf * 2),
+            nn.LeakyReLU(0.2, inplace=True),
+            spectral_norm(nn.Conv2d(ndf * 2, 1, 4, 2, 1)),
+        )
+
+    def forward(self, img, labels):
+        label_embed = self.label_embedding(labels).view(-1, 1, self.img_size, self.img_size)
+        d_in = torch.cat((img, label_embed), dim=1)
+        return self.main(d_in).view(-1, 1)
+
+# ==========================================
+# 1. Type A: Lowest Complexity (MLP)
+# Perfect for strict resource-constrained testing.
+# ==========================================
+class MLPGenerator(nn.Module):
+    def __init__(self, nz=100, img_size=32, nc=3, num_classes=10, device=None):
+        super(MLPGenerator, self).__init__()
+        self.nc = nc
+        self.img_size = img_size
+        self.label_emb = nn.Embedding(num_classes, num_classes)
+        
+        self.net = nn.Sequential(
+            nn.Linear(nz + num_classes, 256),
+            nn.BatchNorm1d(256),
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            nn.Linear(256, 512),
+            nn.BatchNorm1d(512),
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            nn.Linear(512, nc * img_size * img_size),
+            nn.Sigmoid()
+        )
+        self.stats = {'mean': [0.5071, 0.4867, 0.4408], 'std': [0.2675, 0.2565, 0.2761]}
+        self.norm = NormalizeLayer(self.stats['mean'], self.stats['std'])
+
+    def forward(self, z, labels):
+        gen_input = torch.cat([z, self.label_emb(labels)], dim=1)
+        out = self.net(gen_input)
+        img = out.view(-1, self.nc, self.img_size, self.img_size)
+        return self.norm(img)
+
+# ==========================================
+# 3. Type C: Medium-High Complexity (Advanced CNN)
+# Your current architecture. (Included here just 
+# to show where it sits in the spectrum).
+# ==========================================
 class AdvancedGenerator(nn.Module):
     def __init__(self, nz=100, ngf=64, img_size=32, nc=3, num_classes=10, device=None):
         super(AdvancedGenerator, self).__init__()
@@ -85,24 +141,72 @@ class AdvancedGenerator(nn.Module):
         img = self.conv_blocks(out)
         return self.norm(img)
 
-class Critic(nn.Module):
-    def __init__(self, nc=3, ndf=64, num_classes=10, img_size=32):
-        super(Critic, self).__init__()
-        self.img_size = img_size
-        self.label_embedding = nn.Embedding(num_classes, img_size * img_size)
-        self.main = nn.Sequential(
-            spectral_norm(nn.Conv2d(nc + 1, ndf, 4, 2, 1)),
-            nn.LeakyReLU(0.2, inplace=True),
-            spectral_norm(nn.Conv2d(ndf, ndf * 2, 4, 2, 1)),
-            nn.BatchNorm2d(ndf * 2),
-            nn.LeakyReLU(0.2, inplace=True),
-            spectral_norm(nn.Conv2d(ndf * 2, 1, 4, 2, 1)),
+# ==========================================
+# 2. Type B: Low-Medium Complexity (Light CNN)
+# A stripped-down version of your current CNN.
+# ==========================================
+class LightCNNGenerator(AdvancedGenerator):
+    def __init__(self, nz=100, img_size=32, nc=3, num_classes=10, device=None):
+        # Inherits from your AdvancedGenerator but slashes the feature maps (ngf) from 64 to 16
+        super().__init__(nz=nz, ngf=16, img_size=img_size, nc=nc, num_classes=num_classes, device=device)
+        
+# ==========================================
+# 4. Type D: High Complexity (ResNet-Based)
+# Strong baseline for high-fidelity generation.
+# ==========================================
+class UpResBlock(nn.Module):
+    """Residual upsampling block for the ResNet Generator"""
+    def __init__(self, in_channels, out_channels):
+        super(UpResBlock, self).__init__()
+        self.up = nn.Upsample(scale_factor=2, mode='nearest')
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, 1, 1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, 1, 1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(True)
+        
+        # Shortcut connection for the residual
+        self.shortcut = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(in_channels, out_channels, 1, 1, bias=False),
+            nn.BatchNorm2d(out_channels)
         )
 
-    def forward(self, img, labels):
-        label_embed = self.label_embedding(labels).view(-1, 1, self.img_size, self.img_size)
-        d_in = torch.cat((img, label_embed), dim=1)
-        return self.main(d_in).view(-1, 1)
+    def forward(self, x):
+        out = self.relu(self.bn1(self.conv1(self.up(x))))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        return self.relu(out)
+
+class ResNetGenerator(nn.Module):
+    def __init__(self, nz=100, ngf=64, img_size=32, nc=3, num_classes=10, device=None):
+        super(ResNetGenerator, self).__init__()
+        self.init_size = img_size // 8
+        self.label_emb = nn.Embedding(num_classes, num_classes)
+        
+        self.l1 = nn.Sequential(
+            nn.Linear(nz + num_classes, ngf * 8 * self.init_size ** 2),
+            nn.BatchNorm1d(ngf * 8 * self.init_size ** 2),
+            nn.ReLU(True)
+        )
+
+        self.res_blocks = nn.Sequential(
+            UpResBlock(ngf * 8, ngf * 4),
+            UpResBlock(ngf * 4, ngf * 2),
+            UpResBlock(ngf * 2, ngf),
+            nn.Conv2d(ngf, nc, 3, 1, 1),
+            nn.Sigmoid()
+        )
+        
+        self.stats = {'mean': [0.5071, 0.4867, 0.4408], 'std': [0.2675, 0.2565, 0.2761]}
+        self.norm = NormalizeLayer(self.stats['mean'], self.stats['std'])
+
+    def forward(self, z, labels):
+        gen_input = torch.cat([z, self.label_emb(labels)], dim=1)
+        out = self.l1(gen_input)
+        out = out.view(out.size(0), -1, self.init_size, self.init_size)
+        img = self.res_blocks(out)
+        return self.norm(img)
 
 # ==========================================
 # 2. SERVER CLASS
@@ -113,7 +217,31 @@ class OursV2(Server):
         self.img_size = 32 if 'cifar' in self.dataset.lower() else 224
         self.nz = 256 if 'cifar100' in self.dataset.lower() else 100
         self.generated_samples_per_class = args.generated_samples_per_class if hasattr(args, 'generated_samples_per_class') else 100
-        self.global_generator = AdvancedGenerator(nz=self.nz, img_size=self.img_size, num_classes=args.num_classes).to(self.device)
+        
+        # New argument for the robustness filter
+        self.filter_threshold = getattr(args, 'filter_threshold', 1.5)
+
+        gen_type = getattr(args, 'gen_type', 'advanced').lower()
+        print(f"\n[Server] Initializing generator architecture: {gen_type.upper()}")
+        
+        generator_kwargs = {
+            'nz': self.nz, 
+            'img_size': self.img_size, 
+            'num_classes': args.num_classes,
+            'device': self.device
+        }
+
+        if gen_type == 'mlp':
+            self.global_generator = MLPGenerator(**generator_kwargs).to(self.device)
+        elif gen_type == 'light_cnn':
+            self.global_generator = LightCNNGenerator(**generator_kwargs).to(self.device)
+        elif gen_type == 'advanced':
+            self.global_generator = AdvancedGenerator(**generator_kwargs).to(self.device)
+        elif gen_type == 'resnet':
+            self.global_generator = ResNetGenerator(**generator_kwargs).to(self.device)
+        else:
+            raise ValueError(f"Unknown gen_type: {gen_type}. Choose from: mlp, light_cnn, advanced, resnet.")
+
         self.critic = Critic(num_classes=args.num_classes, img_size=self.img_size).to(self.device)
         self.optimizer_g = optim.Adam(self.global_generator.parameters(), lr=0.0002, betas=(0.5, 0.999))
         self.optimizer_cr = optim.Adam(self.critic.parameters(), lr=0.0002, betas=(0.5, 0.999))
@@ -121,6 +249,47 @@ class OursV2(Server):
         
         self.prev_generator = None
         self.set_clients(clientOursV2)
+
+    def filter_anomalous_clients(self):
+        """
+        Filters out corrupted or low-quality client classifiers using L2 weight divergence
+        from the current global model. Modifies self.client_info_dict in place.
+        """
+        if not self.client_info_dict or len(self.client_info_dict) == 0:
+            return
+
+        global_weights = torch.cat([p.view(-1) for p in self.global_model.parameters()])
+        divergences = {}
+        
+        # Calculate L2 distance for each client in the dict
+        for client_id, info in self.client_info_dict.items():
+            client_model = info["model"]
+            client_weights = torch.cat([p.view(-1) for p in client_model.parameters()])
+            l2_dist = torch.norm(client_weights - global_weights, p=2).item()
+            divergences[client_id] = l2_dist
+            
+        # Calculate dynamic threshold based on the median divergence
+        div_values = list(divergences.values())
+        if len(div_values) == 0:
+            return
+            
+        median_div = torch.median(torch.tensor(div_values)).item()
+        threshold = median_div * self.filter_threshold
+        
+        # Filter clients
+        dropped_ids = []
+        safe_dict = {}
+        for client_id, div in divergences.items():
+            if div <= threshold:
+                safe_dict[client_id] = self.client_info_dict[client_id]
+            else:
+                dropped_ids.append(client_id)
+                
+        if len(dropped_ids) > 0:
+            print(f"[Server Filter] Dropped {len(dropped_ids)} anomalous clients based on L2 divergence: {dropped_ids}")
+            
+        # Update the dictionary to only contain safe clients for generator training
+        self.client_info_dict = safe_dict
 
     def train(self):
         for task in range(self.args.num_tasks):
@@ -130,18 +299,36 @@ class OursV2(Server):
 
             for i in range(self.global_rounds):
                 self.selected_clients = self.select_clients()
+                
+                # SIMULATE ATTACK/NOISE: Inject massive noise into the first 2 selected clients
+                # Remove or comment out this block when running normal, non-poisoned experiments!
+                if getattr(self.args, 'simulate_bad_clients', False):
+                    bad_client_count = int(len(self.selected_clients) * 0.20) # 20% bad clients
+                    for j in range(bad_client_count):
+                        print(f"[Simulate Attack] Injecting severe noise into client ID: {self.selected_clients[j].id}")
+                        for param in self.selected_clients[j].model.parameters():
+                            param.data += torch.randn_like(param.data) * 5.0 # Massive noise
+                
                 for client in self.selected_clients:
                     client.train(task=task)
+                
                 self.receive_models()
                 self.aggregate_parameters()
                 self.send_models()
                 self.eval(task=task, glob_iter=i + task*self.global_rounds, flag="global")
 
-            self.train_global_generator()
-            self.train_global_classifier(samples_per_class=self.generated_samples_per_class)
+            # --- NEW: Filter anomalous client classifiers BEFORE Coplay ---
+            if getattr(self.args, 'use_filter', True):
+                self.filter_anomalous_clients()
+            # --------------------------------------------------------------
+
+            with self.server_compute_timer.measure(task):
+                self.train_global_generator()
+                self.train_global_classifier()
             self.visualize_synthetic_data(task)
             self.eval_task(task=task, glob_iter=task, flag="global")
             self.send_models()
+            self._write_metrics_summary()
 
     def _update_client_data(self, task):
         for i, client in enumerate(self.clients):
@@ -155,9 +342,19 @@ class OursV2(Server):
         criterion_ce = nn.CrossEntropyLoss()
         MIN_BN_SAMPLES = 16 # Stabilize BN loss
 
+        # Get only seen classes
+        seen_classes = self.get_seen_classes()
+        if not seen_classes:
+            print("No seen classes yet. Skipping generator training.")
+            return
+        seen_classes_tensor = torch.tensor(seen_classes, dtype=torch.long, device=self.device)
+
         for _ in range(getattr(self.args, 'g_steps', 200)):
             z = torch.randn(64, self.nz).to(self.device)
-            labels = torch.randint(0, self.args.num_classes, (64,)).to(self.device)
+            
+            # Sample only from seen classes
+            idx = torch.randint(0, len(seen_classes), (64,), device=self.device)
+            labels = seen_classes_tensor[idx]
 
             # 1. Update Critic
             self.optimizer_cr.zero_grad()
@@ -171,6 +368,8 @@ class OursV2(Server):
             loss_adv = -torch.mean(self.critic(gen_imgs, labels))
             
             total_ce, total_bn, valid_t = 0, 0, 0
+            
+            # Loop runs over the filtered safe dictionary!
             for _, info in self.client_info_dict.items():
                 mask = np.isin(labels.cpu().numpy(), info["label"])
                 if mask.sum() > 0:
@@ -178,7 +377,7 @@ class OursV2(Server):
                     m_idx = torch.tensor(mask, device=self.device)
                     preds = info["model"].eval().to(self.device)(gen_imgs[m_idx])
                     total_ce += criterion_ce(preds, labels[m_idx])
-                    if mask.sum() >= MIN_BN_SAMPLES: # Check threshold
+                    if mask.sum() >= MIN_BN_SAMPLES: 
                         total_bn += self.get_bn_loss(info["model"], gen_imgs[m_idx])
 
             loss_g = loss_adv + (total_ce / max(1, valid_t)) + 0.1 * (total_bn / max(1, valid_t))
@@ -186,69 +385,71 @@ class OursV2(Server):
             self.optimizer_g.step()
 
     def get_bn_loss(self, teacher_model, gen_imgs):
-        """Calculates BN statistics distance between teacher and fake data."""
         bn_hooks = []
-        # Identify all 2D BatchNorm layers in the teacher model
         bn_layers = [m for m in teacher_model.modules() if isinstance(m, nn.BatchNorm2d)]
 
         for module in bn_layers:
             bn_hooks.append(BNFeatureHook(module))
 
-        # Forward pass to trigger hooks and capture internal features
         teacher_model(gen_imgs)
 
         loss_bn = 0.0
         for hook, layer in zip(bn_hooks, bn_layers):
-            # Stats from the teacher model (Real data)
             real_mean = layer.running_mean
             real_var = layer.running_var
             
-            # Stats from the current batch of generated images
             gen_feat = hook.r_feature
             gen_mean = torch.mean(gen_feat, dim=[0, 2, 3])
             gen_var = torch.var(gen_feat, dim=[0, 2, 3], unbiased=False)
             
-            # Calculate L2 norm difference
             loss_bn += torch.norm(gen_mean - real_mean, 2) + torch.norm(gen_var - real_var, 2)
 
-        # Clean up hooks to prevent memory leaks
         for hook in bn_hooks: 
             hook.remove()
         
         return loss_bn
 
-    def train_global_classifier(self, samples_per_class=5):
+    def train_global_classifier(self):
         self.global_model.train()
         self.global_generator.eval()
         
-        # Calculate the new batch size based on your classes and desired samples
-        batch_size = self.args.num_classes * samples_per_class
+        seen_classes = self.get_seen_classes()
+        if not seen_classes:
+            print("No seen classes yet. Skipping classifier training.")
+            return
+        seen_classes_tensor = torch.tensor(seen_classes, dtype=torch.long)
+
+        samples_per_class = self.generated_samples_per_class
+        num_seen_classes = len(seen_classes) 
+        batch_size = getattr(self.args, 'batch_size', 64) 
         
-        for _ in range(100): # Or calculate iterations based on a total desired dataset size
-            # 1. Generate latent vectors
-            z = torch.randn(batch_size, self.nz).to(self.device)
+        total_samples = num_seen_classes * samples_per_class
+        all_labels = seen_classes_tensor.repeat_interleave(samples_per_class)
+        
+        shuffle_idx = torch.randperm(total_samples)
+        all_labels = all_labels[shuffle_idx].to(self.device)
+        num_batches = math.ceil(total_samples / batch_size)
+        
+        for i in range(num_batches):
+            start_idx = i * batch_size
+            end_idx = min((i + 1) * batch_size, total_samples)
             
-            # 2. Generate balanced labels: [0, 1, ..., C-1, 0, 1, ..., C-1, ...]
-            labels = torch.arange(self.args.num_classes).repeat(samples_per_class).to(self.device)
+            batch_labels = all_labels[start_idx:end_idx]
+            current_batch_size = batch_labels.size(0) 
             
-            # 3. Shuffle the latents and labels together (highly recommended for training stability)
-            shuffle_idx = torch.randperm(batch_size)
-            z = z[shuffle_idx]
-            labels = labels[shuffle_idx]
+            z = torch.randn(current_batch_size, self.nz).to(self.device)
             
             with torch.no_grad():
-                imgs = self.global_generator(z, labels)
+                imgs = self.global_generator(z, batch_labels)
             
             self.optimizer_c.zero_grad()
             logits = self.global_model(imgs)
             
-            # Use instance KD loss
-            loss = self.KD_loss(logits, labels, T=2.0) 
+            loss = self.KD_loss(logits, batch_labels, T=2.0) 
             loss.backward()
             self.optimizer_c.step()
 
     def KD_loss(self, student_logits, labels, T=2.0):
-        # Target is hard labels here for simplicity, or soft-logits from teachers
         return F.cross_entropy(student_logits / T, labels)
 
     def visualize_synthetic_data(self, task):
@@ -257,12 +458,10 @@ class OursV2(Server):
         
         self.global_generator.eval()
         
-        # 1. Collect all classes seen across all clients so far
         all_seen_classes = set()
         for client in self.clients:
             all_seen_classes.update(client.classes_so_far)
         
-        # Convert to sorted list for consistent grid visualization
         all_seen_classes = sorted(list(all_seen_classes))
         
         if not all_seen_classes:
@@ -272,19 +471,12 @@ class OursV2(Server):
         print(f"[Vis] Generating samples for {len(all_seen_classes)} seen classes: {all_seen_classes}")
 
         with torch.no_grad():
-            # 2. Prepare inputs for all seen classes
-            # Generating 1 sample per class for a clean overview grid
             labels = torch.tensor(all_seen_classes, dtype=torch.long).to(self.device)
             z = torch.randn(len(labels), self.nz).to(self.device)
             
-            # 3. Generate and Denormalize
             imgs = self.global_generator(z, labels)
-            
-            # Ensure denormalize uses the specific stats defined in your AdvancedGenerator
             stats = self.global_generator.stats
-            # imgs = denormalize(imgs.cpu(), stats['mean'], stats['std'])
             
-            # 4. Save as a grid (nrow can be adjusted based on number of tasks/classes)
             save_path = os.path.join(debug_dir, f"all_seen_classes_task_{task}.png")
             save_image(imgs, save_path, nrow=5 if self.dataset == 'CIFAR10' else 10 if self.dataset == 'CIFAR100' else 50, normalize=False)
             print(f"[Vis] Saved all-class grid to {save_path}")
@@ -292,8 +484,20 @@ class OursV2(Server):
     def receive_models(self):
         self.client_info_dict = {c.id: {"model": copy.deepcopy(c.model), "label": list(c.classes_so_far)} for c in self.selected_clients}
         super().receive_models()
+        model = self.uploaded_models[0] if self.uploaded_models else self.global_model
+        self.communication_accountant.record_uplink(model, len(self.uploaded_models))
 
     def send_models(self):
         for client in self.clients:
             client.set_parameters(self.global_model)
             client.set_generator_parameters(self.global_generator)
+        self.communication_accountant.record_downlink(self.global_model, len(self.clients))
+        self.communication_accountant.record_downlink(self.global_generator, len(self.clients))
+
+
+    def get_seen_classes(self):
+        all_seen_classes = set()
+        for client in self.clients:
+            if hasattr(client, 'classes_so_far'):
+                all_seen_classes.update(client.classes_so_far)
+        return sorted(list(all_seen_classes))

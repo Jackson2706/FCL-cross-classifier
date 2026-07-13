@@ -15,6 +15,11 @@ task_schedule_seed: 0
 
 # Journal reliability, boundary-preservation, and robustness modules are opt-in.
 reliability_mode: none
+reliability_beta: 1.0
+reliability_beta_entropy: 1.0
+reliability_beta_bn: 1.0
+reliability_trust_floor: 0.0
+reliability_accept_threshold: 0.0
 boundary_mode: none
 robustness_mode: none
 

@@ -5,6 +5,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from flcore.clients.client_ourv2 import clientOursV2
+from flcore.reliability.logging import ReliabilityLogger
+from flcore.reliability.scorer import ReliabilityScorer
+from flcore.reliability.signals import bn_feature_distance
 from flcore.scheduler.consolidation import ConsolidationManager
 from flcore.servers.serverbase import Server
 from flcore.scheduler.task_scheduler import TaskScheduler
@@ -16,18 +19,6 @@ from utils.data_utils import (read_client_data_FCL_cifar10,
                               read_client_data_FCL_imagenet1k)
 
 
-class BNFeatureHook:
-    def __init__(self, module):
-        self.hook = module.register_forward_hook(self.hook_fn)
-        self.r_feature = None 
-
-    def hook_fn(self, module, input, output):
-        # We capture the input to the BatchNorm layer
-        self.r_feature = input[0]
-
-    def remove(self):
-        self.hook.remove()
-        
 # ==========================================
 # 1. ADVANCED GENERATOR & UTILS
 # ==========================================
@@ -222,6 +213,21 @@ class OursV2(Server):
         
         # New argument for the robustness filter
         self.filter_threshold = getattr(args, 'filter_threshold', 1.5)
+        self.client_trust = {}
+        reliability_cfg = {
+            key: getattr(args, key, default)
+            for key, default in self.reliability_config.items()
+        }
+        self.reliability_scorer = ReliabilityScorer(
+            reliability_cfg["reliability_mode"], **reliability_cfg
+        )
+        self.reliability_logger = (
+            ReliabilityLogger(
+                self.save_folder,
+                reliability_cfg["reliability_accept_threshold"],
+            )
+            if self.offlog else None
+        )
 
         gen_type = getattr(args, 'gen_type', 'advanced').lower()
         print(f"\n[Server] Initializing generator architecture: {gen_type.upper()}")
@@ -329,6 +335,7 @@ class OursV2(Server):
             return
             
         median_div = torch.median(torch.tensor(div_values)).item()
+        self._set_client_trust(divergences, median_div)
         threshold = median_div * self.filter_threshold
         
         # Filter clients
@@ -345,6 +352,40 @@ class OursV2(Server):
             
         # Update the dictionary to only contain safe clients for generator training
         self.client_info_dict = safe_dict
+
+    def _set_client_trust(self, divergences, median_div):
+        """Expose soft trust without changing the existing hard-filter decision."""
+
+        floor = float(getattr(self.args, "reliability_trust_floor", 0.0))
+        if median_div <= torch.finfo(torch.float32).eps:
+            self.client_trust = {
+                client_id: (1.0 if divergence <= median_div else floor)
+                for client_id, divergence in divergences.items()
+            }
+            return
+        self.client_trust = {
+            client_id: max(floor, min(1.0, 1.0 - divergence / median_div))
+            for client_id, divergence in divergences.items()
+        }
+
+    def _update_client_trust(self):
+        """Compute trust even when the optional hard filter is disabled."""
+
+        if not self.client_info_dict:
+            self.client_trust = {}
+            return
+        with torch.no_grad():
+            global_weights = torch.cat([p.detach().view(-1) for p in self.global_model.parameters()])
+            divergences = {}
+            for client_id, info in self.client_info_dict.items():
+                client_weights = torch.cat([
+                    p.detach().view(-1) for p in info["model"].parameters()
+                ])
+                divergences[client_id] = torch.norm(
+                    client_weights - global_weights, p=2
+                ).item()
+        median_div = torch.median(torch.tensor(list(divergences.values()))).item()
+        self._set_client_trust(divergences, median_div)
 
     def train(self):
         if self.async_mode:
@@ -633,29 +674,46 @@ class OursV2(Server):
             self.optimizer_g.step()
 
     def get_bn_loss(self, teacher_model, gen_imgs):
-        bn_hooks = []
-        bn_layers = [m for m in teacher_model.modules() if isinstance(m, nn.BatchNorm2d)]
+        return bn_feature_distance(teacher_model, gen_imgs, per_sample=False)
 
-        for module in bn_layers:
-            bn_hooks.append(BNFeatureHook(module))
+    def _reliability_teacher_signals(self, imgs, labels):
+        """Return ensemble logits, source IDs, source trust, and source BN distance."""
 
-        teacher_model(gen_imgs)
+        batch_size = labels.numel()
+        source_ids = torch.full((batch_size,), -1, device=labels.device, dtype=torch.long)
+        if not self.client_info_dict:
+            return None, source_ids, None, None
 
-        loss_bn = 0.0
-        for hook, layer in zip(bn_hooks, bn_layers):
-            real_mean = layer.running_mean
-            real_var = layer.running_var
-            
-            gen_feat = hook.r_feature
-            gen_mean = torch.mean(gen_feat, dim=[0, 2, 3])
-            gen_var = torch.var(gen_feat, dim=[0, 2, 3], unbiased=False)
-            
-            loss_bn += torch.norm(gen_mean - real_mean, 2) + torch.norm(gen_var - real_var, 2)
+        self._update_client_trust()
+        teacher_ids = list(self.client_info_dict)
+        teacher_logits = []
+        for client_id in teacher_ids:
+            teacher = self.client_info_dict[client_id]["model"].eval().to(self.device)
+            teacher_logits.append(teacher(imgs))
+        ensemble = torch.stack(teacher_logits, dim=0)
 
-        for hook in bn_hooks: 
-            hook.remove()
-        
-        return loss_bn
+        target_probability = torch.log_softmax(ensemble, dim=-1).exp().gather(
+            2, labels.view(1, -1, 1).expand(len(teacher_ids), -1, 1)
+        ).squeeze(-1)
+        source_index = target_probability.argmax(dim=0)
+        teacher_id_tensor = torch.tensor(teacher_ids, device=labels.device, dtype=torch.long)
+        source_ids = teacher_id_tensor[source_index]
+        trust = torch.tensor(
+            [self.client_trust.get(client_id, 1.0) for client_id in teacher_ids],
+            device=labels.device, dtype=imgs.dtype,
+        )[source_index]
+
+        bn_distance = None
+        if self.reliability_scorer.mode in {"bn_realism", "multi_signal"}:
+            bn_distance = imgs.new_zeros(batch_size)
+            for index, client_id in enumerate(teacher_ids):
+                mask = source_index == index
+                if mask.any():
+                    teacher = self.client_info_dict[client_id]["model"]
+                    bn_distance[mask] = bn_feature_distance(
+                        teacher, imgs[mask], per_sample=True
+                    )
+        return ensemble, source_ids, trust, bn_distance
 
     def train_global_classifier(self, seen_classes=None):
         self.global_model.train()
@@ -692,10 +750,52 @@ class OursV2(Server):
             
             self.optimizer_c.zero_grad()
             logits = self.global_model(imgs)
-            
-            loss = self.KD_loss(logits, batch_labels, T=2.0) 
+
+            if self.reliability_scorer.mode == "none":
+                # Compatibility contract: this is the exact historical objective.
+                loss = self.KD_loss(logits, batch_labels, T=2.0)
+                weights = torch.ones_like(batch_labels, dtype=logits.dtype)
+                source_ids = torch.full_like(batch_labels, -1)
+            else:
+                with torch.no_grad():
+                    ensemble, source_ids, trust, bn_distance = (
+                        self._reliability_teacher_signals(imgs, batch_labels)
+                    )
+                    use_teacher_ensemble = self.reliability_scorer.mode in {
+                        "entropy", "mutual_information", "multi_signal"
+                    }
+                    score_logits = (
+                        ensemble if use_teacher_ensemble and ensemble is not None
+                        else logits.detach()
+                    )
+                    weights = self.reliability_scorer.score(
+                        score_logits,
+                        targets=batch_labels,
+                        bn_distance=bn_distance,
+                        trust=trust,
+                    )
+                kd = float(getattr(self.args, "kd", 0.5))
+                temperature = 1.0 / kd if kd > 0.0 else 2.0
+                per_sample_ce = F.cross_entropy(
+                    logits / temperature, batch_labels, reduction="none"
+                )
+                loss = torch.mean(weights * per_sample_ce)
+
+            if self.reliability_logger is not None:
+                self.reliability_logger.add_batch(
+                    weights,
+                    batch_labels,
+                    source_ids,
+                    logits.detach().argmax(dim=1).eq(batch_labels),
+                    self.reliability_scorer.last_missing_signals,
+                )
             loss.backward()
             self.optimizer_c.step()
+
+        if self.reliability_logger is not None:
+            self.reliability_logger.finish_consolidation(
+                self.reliability_scorer.mode
+            )
 
     def KD_loss(self, student_logits, labels, T=2.0):
         return F.cross_entropy(student_logits / T, labels)

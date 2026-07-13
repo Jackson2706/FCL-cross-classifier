@@ -25,7 +25,10 @@ from flcore.scheduler.consolidation import CONSOLIDATION_CONFIG_DEFAULTS
 from flcore.reliability.scorer import RELIABILITY_CONFIG_DEFAULTS
 from flcore.boundary.attacks import BOUNDARY_CONFIG_DEFAULTS
 from flcore.robustness.scenarios import ROBUSTNESS_CONFIG_DEFAULTS
-from flcore.hetero.metrics import summarize_model_type_accuracy
+from flcore.hetero.metrics import (
+    summarize_distillation_communication,
+    summarize_model_type_accuracy,
+)
 from flcore.hetero.model_factory import (
     build_client_model,
     resolve_heterogeneity_config,
@@ -84,6 +87,8 @@ class Server(object):
         self.local_accuracy_matrix = []
         self.communication_accountant = CommunicationAccountant()
         self.server_compute_timer = ServerComputeTimer()
+        self.server_distillation_timer = ServerComputeTimer()
+        self.hetero_communication_records = {}
         self.heterogeneity_metrics = None
 
         self.async_config = {
@@ -172,6 +177,8 @@ class Server(object):
                     "client_model_pool": self.heterogeneity_config.client_model_pool,
                     "server_model": self.heterogeneity_config.server_model,
                     "aggregation_mode": self.heterogeneity_config.aggregation_mode,
+                    "client_distill_steps": self.heterogeneity_config.client_distill_steps,
+                    "distill_transfer_size": self.heterogeneity_config.distill_transfer_size,
                 })
             resolved.setdefault(
                 "generator_distillation",
@@ -275,6 +282,14 @@ class Server(object):
                     "per_model_type": {},
                     "fairness_gap": None,
                 }
+                summary["heterogeneity"]["communication_by_architecture"] = (
+                    summarize_distillation_communication(
+                        self.hetero_communication_records
+                    )
+                )
+                summary["heterogeneity"]["server_distillation_seconds"] = (
+                    self.server_distillation_timer.as_dict()
+                )
             summary_path = os.path.join(self.save_folder, "metrics_summary.json")
             with open(summary_path, mode="w") as file:
                 json.dump(summary, file, indent=2, sort_keys=True, allow_nan=False)
@@ -301,9 +316,9 @@ class Server(object):
                 offset = int(getattr(self.args, "seed", 0)) % len(pool)
                 model_type = pool[(i + offset) % len(pool)]
                 client_model = build_client_model(model_type, self.args)
-                # Phase 6a validates that this architecture matches the server,
-                # so all FedAvg participants begin from identical parameters.
-                client_model.load_state_dict(self.global_model.state_dict())
+                if self.heterogeneity_config.aggregation_mode == "fedavg":
+                    # Homogeneous FedAvg participants start identically.
+                    client_model.load_state_dict(self.global_model.state_dict())
                 client = clientObj(
                     self.args,
                     id=i,
@@ -339,6 +354,25 @@ class Server(object):
             "aggregation_mode": self.heterogeneity_config.aggregation_mode,
             **metrics,
         }
+
+    def _record_distillation_communication(self, clients, direction, sample_count):
+        """Account float32 classifier logits, grouped by client architecture."""
+
+        payload_bytes = int(sample_count) * int(self.num_classes) * 4
+        key = f"{direction}_bytes"
+        event_key = f"{direction}_events"
+        for client in clients:
+            record = self.hetero_communication_records.setdefault(
+                client.model_type,
+                {
+                    "uplink_bytes": 0,
+                    "downlink_bytes": 0,
+                    "uplink_events": 0,
+                    "downlink_events": 0,
+                },
+            )
+            record[key] += payload_bytes
+            record[event_key] += 1
 
     def select_clients(self):
         if self.random_join_ratio:

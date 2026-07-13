@@ -36,6 +36,20 @@ class CommunicationAccountant:
         except Exception:
             pass
 
+    def record_uplink_bytes(self, byte_count, events=1):
+        try:
+            self.uplink_bytes += max(0, int(byte_count))
+            self.uplink_events += max(0, int(events))
+        except Exception:
+            pass
+
+    def record_downlink_bytes(self, byte_count, events=1):
+        try:
+            self.downlink_bytes += max(0, int(byte_count))
+            self.downlink_events += max(0, int(events))
+        except Exception:
+            pass
+
     def as_dict(self):
         try:
             divisor = 1024.0 ** 2

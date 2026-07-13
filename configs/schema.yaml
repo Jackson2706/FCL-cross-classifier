@@ -81,3 +81,10 @@ client_model_pool:
   - resnet18
 server_model: resnet18
 aggregation_mode: fedavg
+# Distillation modes use one shared generator-produced transfer batch. In
+# logit_distillation it is generated once and then fixed for the run; in
+# synthetic_distillation it is refreshed from the consolidated generator.
+client_distill_steps: 1
+distill_transfer_size: 256
+# Distillation temperature reuses the existing inverse-kd convention: 1 / kd
+# when kd > 0, otherwise 2.0.

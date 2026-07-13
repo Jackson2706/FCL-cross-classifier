@@ -1,7 +1,7 @@
 """Factory for CIFAR classifiers with a common ``base``/``head`` interface.
 
-Phase 6a intentionally supports FedAvg only when every client and the server use
-the same architecture.  Cross-architecture aggregation belongs to Phase 6b.
+FedAvg is supported only when every client and the server use the same
+architecture. Cross-architecture pools use logit or synthetic distillation.
 """
 
 from types import SimpleNamespace
@@ -18,7 +18,11 @@ HETERO_CONFIG_DEFAULTS = {
     "client_model_pool": ["resnet18"],
     "server_model": "resnet18",
     "aggregation_mode": "fedavg",
+    "client_distill_steps": 1,
+    "distill_transfer_size": 256,
 }
+
+DISTILLATION_MODES = {"logit_distillation", "synthetic_distillation"}
 
 SUPPORTED_CLIENT_MODELS = {
     "small_cnn",
@@ -107,7 +111,7 @@ def build_client_model(name, args):
 
 
 def resolve_heterogeneity_config(args):
-    """Resolve and validate Phase-6a model-assignment configuration."""
+    """Resolve and validate model-assignment and aggregation configuration."""
 
     enabled = bool(getattr(args, "model_heterogeneity", False))
     if not enabled:
@@ -117,6 +121,8 @@ def resolve_heterogeneity_config(args):
             client_model_pool=list(HETERO_CONFIG_DEFAULTS["client_model_pool"]),
             server_model=HETERO_CONFIG_DEFAULTS["server_model"],
             aggregation_mode=HETERO_CONFIG_DEFAULTS["aggregation_mode"],
+            client_distill_steps=HETERO_CONFIG_DEFAULTS["client_distill_steps"],
+            distill_transfer_size=HETERO_CONFIG_DEFAULTS["distill_transfer_size"],
             distinct_models=list(HETERO_CONFIG_DEFAULTS["client_model_pool"]),
         )
 
@@ -131,6 +137,12 @@ def resolve_heterogeneity_config(args):
     aggregation_mode = str(getattr(args, "aggregation_mode", "fedavg")).lower()
     distinct = sorted(set(pool))
 
+    valid_modes = {"fedavg", *DISTILLATION_MODES}
+    if aggregation_mode not in valid_modes:
+        raise ValueError(
+            f"Unknown aggregation_mode={aggregation_mode!r}. Choose from: {sorted(valid_modes)}"
+        )
+
     if enabled and len(distinct) > 1:
         if aggregation_mode == "fedavg":
             raise ValueError(
@@ -138,17 +150,7 @@ def resolve_heterogeneity_config(args):
                 "it needs aggregation_mode=logit_distillation or synthetic_distillation "
                 "(Phase 6b)."
             )
-        raise NotImplementedError(
-            f"aggregation_mode={aggregation_mode} for a heterogeneous client_model_pool "
-            "is reserved for Phase 6b distillation aggregation."
-        )
-
-    if enabled and aggregation_mode != "fedavg":
-        raise NotImplementedError(
-            f"aggregation_mode={aggregation_mode} is reserved for Phase 6b; Phase 6a "
-            "runs homogeneous pools with aggregation_mode=fedavg."
-        )
-    if enabled and server_model != distinct[0]:
+    if enabled and aggregation_mode == "fedavg" and server_model != distinct[0]:
         raise ValueError(
             "FedAvg requires server_model to match the homogeneous client_model_pool; "
             f"got server_model={server_model!r} and client model {distinct[0]!r}."
@@ -159,5 +161,7 @@ def resolve_heterogeneity_config(args):
         client_model_pool=pool,
         server_model=server_model,
         aggregation_mode=aggregation_mode,
+        client_distill_steps=max(0, int(getattr(args, "client_distill_steps", 1))),
+        distill_transfer_size=max(1, int(getattr(args, "distill_transfer_size", 256))),
         distinct_models=distinct,
     )

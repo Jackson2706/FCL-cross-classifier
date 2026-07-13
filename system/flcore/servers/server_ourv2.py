@@ -27,6 +27,7 @@ from flcore.boundary.diagnostics import (
     top_two_margins,
 )
 from flcore.clients.client_ourv2 import clientOursV2
+from flcore.hetero.aggregator import client_distill, server_distill
 from flcore.reliability.calibration import expected_calibration_error
 from flcore.reliability.logging import ReliabilityLogger
 from flcore.reliability.objectives import (
@@ -254,6 +255,13 @@ class OursV2(Server):
             getattr(args, "generator_grad_clip", 10.0)
         )
         self.last_generator_losses = None
+        self.distillation_enabled = bool(
+            self.heterogeneity_config.enabled
+            and self.heterogeneity_config.aggregation_mode
+            in {"logit_distillation", "synthetic_distillation"}
+        )
+        self._fixed_logit_transfer_inputs = None
+        self._distill_transfer_inputs = None
         
         # New argument for the robustness filter
         self.filter_threshold = getattr(args, 'filter_threshold', 1.5)
@@ -399,6 +407,14 @@ class OursV2(Server):
         if not self.client_info_dict or len(self.client_info_dict) == 0:
             return
 
+        if self.distillation_enabled:
+            # Parameter-space distances are undefined across architectures.
+            self.client_trust = {
+                client_id: 1.0 for client_id in self.client_info_dict
+            }
+            self.last_client_trust_all = dict(self.client_trust)
+            return
+
         global_weights = torch.cat([p.view(-1) for p in self.global_model.parameters()])
         divergences = {}
         
@@ -455,6 +471,11 @@ class OursV2(Server):
         if not self.client_info_dict:
             self.client_trust = {}
             return
+        if self.distillation_enabled:
+            self.client_trust = {
+                client_id: 1.0 for client_id in self.client_info_dict
+            }
+            return
         with torch.no_grad():
             global_weights = torch.cat([p.detach().view(-1) for p in self.global_model.parameters()])
             divergences = {}
@@ -497,9 +518,12 @@ class OursV2(Server):
                     if client_state.active and not client_state.dropped:
                         client.train(task=client_state.task_id)
 
-                self.receive_models()
-                self.aggregate_parameters()
-                self.send_models()
+                if self.distillation_enabled:
+                    self._distillation_round(global_round)
+                else:
+                    self.receive_models()
+                    self.aggregate_parameters()
+                    self.send_models()
                 self.eval(task=task, glob_iter=global_round, flag="global")
 
             # --- NEW: Filter anomalous client classifiers BEFORE Coplay ---
@@ -509,7 +533,10 @@ class OursV2(Server):
 
             with self.server_compute_timer.measure(task):
                 self.train_global_generator()
-                self.train_global_classifier()
+                if self.distillation_enabled:
+                    self._server_distillation_update(task)
+                else:
+                    self.train_global_classifier()
             self._record_privacy_proxies(task)
             self._record_boundary_diagnostics(task=task, global_round=global_round)
             self._record_calibration(task=task, global_round=global_round)
@@ -558,11 +585,17 @@ class OursV2(Server):
                 client.train(task=round_states[client.id].task_id)
                 self._cache_async_task_upload(client, round_states[client.id].task_id)
 
-            self._receive_async_models()
-            if self.uploaded_models:
+            if self.distillation_enabled:
+                self._receive_distillation_models()
+                if self.uploaded_models:
+                    self._server_distillation_update(global_round)
+            else:
+                self._receive_async_models()
+            if self.uploaded_models and not self.distillation_enabled:
                 self.aggregate_parameters()
             else:
-                print(f"[Async] Round {global_round}: no fresh uploads; global model unchanged.")
+                if not self.uploaded_models:
+                    print(f"[Async] Round {global_round}: no fresh uploads; global model unchanged.")
             self.send_models()
             global_stage = min(global_round // max(1, self.global_rounds), self.num_tasks - 1)
             self.eval(task=global_stage, glob_iter=global_round, flag="global")
@@ -641,9 +674,12 @@ class OursV2(Server):
                     self.train_global_generator(
                         seen_classes=event.globally_consolidated_classes
                     )
-                    self.train_global_classifier(
-                        seen_classes=event.globally_consolidated_classes
-                    )
+                    if self.distillation_enabled:
+                        self._server_distillation_update(event.boundary_k)
+                    else:
+                        self.train_global_classifier(
+                            seen_classes=event.globally_consolidated_classes
+                        )
                 self._record_privacy_proxies(
                     event.boundary_k,
                     seen_classes=event.globally_consolidated_classes,
@@ -1653,6 +1689,164 @@ class OursV2(Server):
             save_image(imgs, save_path, nrow=5 if self.dataset == 'CIFAR10' else 10 if self.dataset == 'CIFAR100' else 50, normalize=False)
             print(f"[Vis] Saved all-class grid to {save_path}")
 
+    def _distillation_temperature(self):
+        kd = float(getattr(self.args, "kd", 0.5))
+        return 1.0 / kd if kd > 0.0 else 2.0
+
+    def _make_distillation_transfer_set(self):
+        """Generate the shared transfer inputs used in both KD directions.
+
+        ``logit_distillation`` fixes its first generator-produced batch for the
+        whole run. ``synthetic_distillation`` refreshes the batch from the
+        current consolidated global generator on every server update.
+        """
+
+        if (
+            self.heterogeneity_config.aggregation_mode == "logit_distillation"
+            and self._fixed_logit_transfer_inputs is not None
+        ):
+            inputs, labels = self._fixed_logit_transfer_inputs
+            self._distill_transfer_labels = labels
+            return inputs
+
+        sample_count = self.heterogeneity_config.distill_transfer_size
+        seen_classes = self.get_seen_classes() or list(range(self.num_classes))
+        labels = torch.tensor(
+            [seen_classes[index % len(seen_classes)] for index in range(sample_count)],
+            dtype=torch.long,
+            device=self.device,
+        )
+        generator_was_training = self.global_generator.training
+        self.global_generator.eval()
+        with torch.no_grad():
+            z = torch.randn(sample_count, self.nz, device=self.device)
+            inputs = self.global_generator(z, labels).detach()
+        self.global_generator.train(generator_was_training)
+        self._distill_transfer_labels = labels
+        if self.heterogeneity_config.aggregation_mode == "logit_distillation":
+            self._fixed_logit_transfer_inputs = (inputs, labels)
+        return inputs
+
+    def _receive_distillation_models(self):
+        """Capture teachers without treating model parameters as wire payloads."""
+
+        self.uploaded_ids = []
+        self.uploaded_weights = []
+        self.uploaded_models = []
+        self.client_info_dict = {}
+        total_samples = sum(len(client.train_data) for client in self.selected_clients)
+        if total_samples <= 0:
+            return
+        for client in self.selected_clients:
+            uploaded_model = (
+                self.robustness_scenario.corrupt_upload(client.id, client.model)
+                if self.robustness_scenario.enabled else client.model
+            )
+            sample_count = len(client.train_data)
+            self.uploaded_ids.append(client.id)
+            self.uploaded_weights.append(sample_count / total_samples)
+            self.uploaded_models.append(uploaded_model)
+            self.client_info_dict[client.id] = {
+                "model": copy.deepcopy(uploaded_model),
+                "label": list(client.classes_so_far),
+                "sample_count": sample_count,
+            }
+
+    def _distillation_weights(self, teachers, transfer_inputs):
+        sample_counts = torch.tensor(
+            [
+                max(0, int(info.get("sample_count", 0)))
+                for info in self.client_info_dict.values()
+            ],
+            device=self.device,
+            dtype=transfer_inputs.dtype,
+        )
+        if sample_counts.sum() <= 0:
+            sample_counts.fill_(1.0)
+        teacher_weights = sample_counts / sample_counts.sum()
+
+        with torch.no_grad():
+            ensemble = torch.stack([
+                teacher.eval().to(self.device)(transfer_inputs)
+                for teacher in teachers
+            ])
+            trust = None
+            if self.client_trust:
+                trust = float(np.mean([
+                    self.client_trust.get(client_id, 1.0)
+                    for client_id in self.client_info_dict
+                ]))
+            sample_reliability = self.reliability_scorer.score(
+                ensemble,
+                targets=self._distill_transfer_labels,
+                trust=trust,
+            )
+        return teacher_weights[:, None] * sample_reliability[None, :]
+
+    def _server_distillation_update(self, timer_key):
+        if not self.client_info_dict:
+            print("[Distillation] No client teachers; server model unchanged.")
+            return
+        transfer_inputs = self._make_distillation_transfer_set()
+        self._distill_transfer_inputs = transfer_inputs
+        teachers = [info["model"] for info in self.client_info_dict.values()]
+        weights = self._distillation_weights(teachers, transfer_inputs)
+        with self.server_distillation_timer.measure(timer_key):
+            loss = server_distill(
+                self.global_model,
+                teachers,
+                transfer_inputs,
+                weights,
+                self._distillation_temperature(),
+                optimizer=self.optimizer_c,
+            )
+        upload_clients = [
+            next(client for client in self.clients if client.id == client_id)
+            for client_id in self.client_info_dict
+        ]
+        self._record_distillation_communication(
+            upload_clients, "uplink", len(transfer_inputs)
+        )
+        logit_bytes = len(upload_clients) * len(transfer_inputs) * self.num_classes * 4
+        self.communication_accountant.record_uplink_bytes(logit_bytes)
+        print(
+            f"[Distillation] server loss={loss:.6f} teachers={len(teachers)} "
+            f"transfer_samples={len(transfer_inputs)}"
+        )
+
+    def _broadcast_distillation(self):
+        transfer_inputs = self._distill_transfer_inputs
+        if transfer_inputs is None:
+            transfer_inputs = self._make_distillation_transfer_set()
+            self._distill_transfer_inputs = transfer_inputs
+        self.global_model.eval()
+        with torch.no_grad():
+            server_logits = self.global_model(transfer_inputs).detach()
+        for client in self.clients:
+            client_distill(
+                client.model,
+                server_logits,
+                transfer_inputs,
+                self._distillation_temperature(),
+                self.heterogeneity_config.client_distill_steps,
+                optimizer=client.optimizer,
+            )
+            client.set_generator_parameters(self.global_generator)
+        self._record_distillation_communication(
+            self.clients, "downlink", len(transfer_inputs)
+        )
+        logit_bytes = len(self.clients) * len(transfer_inputs) * self.num_classes * 4
+        self.communication_accountant.record_downlink_bytes(logit_bytes)
+        self.communication_accountant.record_downlink(
+            self.global_generator, len(self.clients)
+        )
+
+    def _distillation_round(self, timer_key):
+        self._receive_distillation_models()
+        if self.uploaded_models:
+            self._server_distillation_update(timer_key)
+        self.send_models()
+
     def receive_models(self):
         if not self.robustness_scenario.enabled:
             self.client_info_dict = {c.id: {"model": copy.deepcopy(c.model), "label": list(c.classes_so_far)} for c in self.selected_clients}
@@ -1674,6 +1868,9 @@ class OursV2(Server):
         self.communication_accountant.record_uplink(model, len(self.uploaded_models))
 
     def send_models(self):
+        if self.distillation_enabled:
+            self._broadcast_distillation()
+            return
         for client in self.clients:
             client.set_parameters(self.global_model)
             client.set_generator_parameters(self.global_generator)

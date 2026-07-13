@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from flcore.clients.client_ourv2 import clientOursV2
+from flcore.scheduler.consolidation import ConsolidationManager
 from flcore.servers.serverbase import Server
 from flcore.scheduler.task_scheduler import TaskScheduler
 from torch import nn, optim
@@ -257,7 +258,7 @@ class OursV2(Server):
             getattr(args, 'client_task_speed_distribution', 'fixed_groups')
             if async_mode else 'synchronous'
         )
-        self.task_scheduler = TaskScheduler(
+        scheduler_kwargs = dict(
             num_clients=self.num_clients,
             num_tasks=self.num_tasks,
             rounds_per_task=self.global_rounds,
@@ -272,8 +273,37 @@ class OursV2(Server):
             custom_schedule_path=getattr(args, 'custom_schedule_path', None),
             allow_task_jumps=getattr(args, 'allow_task_jumps', False),
         )
+        self.task_scheduler = TaskScheduler(**scheduler_kwargs)
         self._client_loaded_task = {client.id: 0 for client in self.clients}
         self._evaluated_client_stages = set()
+        if self.async_mode:
+            total_rounds = self.num_tasks * self.global_rounds
+            schedule_forecast = TaskScheduler(**scheduler_kwargs)
+            self._async_schedule = {
+                global_round: schedule_forecast.state_for_round(global_round)
+                for global_round in range(total_rounds)
+            }
+            permanent_dropped = set(
+                schedule_forecast.materialized_schedule()["permanent_dropped_clients"]
+            )
+            eligible_by_boundary = {
+                boundary_k: {
+                    client.id for client in self.clients
+                    if client.id not in permanent_dropped
+                    and any(
+                        states[client.id].task_id == boundary_k
+                        for states in self._async_schedule.values()
+                    )
+                }
+                for boundary_k in range(self.num_tasks)
+            }
+            self.consolidation_manager = ConsolidationManager(
+                eligible_by_boundary,
+                trigger=getattr(args, 'consolidation_trigger', 'watermark'),
+                timeout_rounds=getattr(args, 'consolidation_timeout_rounds', None),
+                quorum=getattr(args, 'consolidation_quorum', 1.0),
+            )
+            self._async_last_task_upload = {}
 
     def filter_anomalous_clients(self):
         """
@@ -364,16 +394,27 @@ class OursV2(Server):
             self._write_metrics_summary()
 
     def _train_async(self):
-        """Run asynchronous client clocks with interim global-clock consolidation.
-
-        INTERIM consolidation under async; proper completion-watermark
-        consolidation is Phase 2c — async results are not scientifically final
-        until then.
-        """
+        """Run asynchronous client clocks with completion-watermark consolidation."""
 
         total_rounds = self.num_tasks * self.global_rounds
+        previous_states = None
         for global_round in range(total_rounds):
             round_states = self.task_scheduler.state_for_round(global_round)
+            pending_completions = []
+            for client in self.clients:
+                state = round_states[client.id]
+                self.consolidation_manager.mark_reached(
+                    state.task_id, client.id, global_round
+                )
+                if previous_states is None:
+                    continue
+                previous_task = previous_states[client.id].task_id
+                if state.task_id <= previous_task:
+                    continue
+                upload = self._async_last_task_upload.get(client.id)
+                if upload is not None and upload["task_id"] == previous_task:
+                    pending_completions.append(upload)
+
             self._update_client_data(round_states)
             self.selected_clients = [
                 client for client in self.clients
@@ -389,6 +430,7 @@ class OursV2(Server):
 
             for client in self.selected_clients:
                 client.train(task=round_states[client.id].task_id)
+                self._cache_async_task_upload(client, round_states[client.id].task_id)
 
             self._receive_async_models()
             if self.uploaded_models:
@@ -400,22 +442,87 @@ class OursV2(Server):
             self.eval(task=global_stage, glob_iter=global_round, flag="global")
             self._record_new_client_stage_metrics(round_states)
 
-            if (global_round + 1) % max(1, self.global_rounds) == 0:
-                print(
-                    "[Async][INTERIM] Consolidating on the global-clock boundary. "
-                    "Proper completion-watermark consolidation is Phase 2c; "
-                    "async results are not scientifically final until then."
-                )
-                if getattr(self.args, 'use_filter', True):
-                    self.filter_anomalous_clients()
-                with self.server_compute_timer.measure(global_stage):
-                    self.train_global_generator()
-                    self.train_global_classifier()
-                self.eval_task(task=global_stage, glob_iter=global_stage, flag="global")
-                self.send_models()
-                self._write_metrics_summary()
+            for upload in pending_completions:
+                self._publish_async_completion(upload, global_round)
+            self._consolidate_ready_boundaries(global_round)
+            previous_states = round_states
+
+        # A client's last stage has no later clock transition to publish it.
+        final_round = max(0, total_rounds - 1)
+        for client in self.clients:
+            upload = self._async_last_task_upload.get(client.id)
+            if upload is not None:
+                self._publish_async_completion(upload, final_round)
+        self._consolidate_ready_boundaries(final_round)
 
         self._write_metrics_summary()
+
+    def _cache_async_task_upload(self, client, task_id):
+        """Retain the local upload before the next global broadcast replaces it."""
+
+        self._async_last_task_upload[client.id] = {
+            "client_id": client.id,
+            "task_id": int(task_id),
+            "model": copy.deepcopy(client.model),
+            "class_labels": list(client.task_dict[int(task_id)]),
+            "sample_count": len(client.train_data),
+        }
+
+    def _publish_async_completion(self, upload, global_round):
+        late_arrival_count = len(self.consolidation_manager.late_arrivals)
+        recorded = self.consolidation_manager.record_completion(
+            boundary_k=upload["task_id"],
+            client_id=upload["client_id"],
+            model=upload["model"],
+            class_labels=upload["class_labels"],
+            sample_count=upload["sample_count"],
+            global_round=global_round,
+        )
+        if (
+            not recorded
+            and len(self.consolidation_manager.late_arrivals) > late_arrival_count
+        ):
+            print(
+                f"[Async][Consolidation] Late completion for boundary "
+                f"{upload['task_id']} from client {upload['client_id']}; not re-running."
+            )
+
+    def _consolidate_ready_boundaries(self, global_round):
+        for event in self.consolidation_manager.pop_ready(global_round):
+            print(
+                f"[Async][Consolidation] Boundary {event.boundary_k} READY via "
+                f"{event.trigger}; clients={list(event.participating_client_ids)}, "
+                f"missing={list(event.missing_client_ids)}."
+            )
+            previous_client_info = self.client_info_dict
+            self.client_info_dict = {
+                snapshot.client_id: {
+                    "model": copy.deepcopy(snapshot.model),
+                    "label": list(snapshot.class_labels),
+                    "sample_count": snapshot.sample_count,
+                    "bn_statistics": copy.deepcopy(snapshot.bn_statistics),
+                }
+                for snapshot in event.teacher_snapshots
+            }
+            try:
+                if getattr(self.args, 'use_filter', True):
+                    self.filter_anomalous_clients()
+                with self.server_compute_timer.measure(event.boundary_k):
+                    self.train_global_generator(
+                        seen_classes=event.globally_consolidated_classes
+                    )
+                    self.train_global_classifier(
+                        seen_classes=event.globally_consolidated_classes
+                    )
+            finally:
+                self.client_info_dict = previous_client_info
+            self.eval_task(
+                task=event.boundary_k,
+                glob_iter=global_round,
+                flag="global",
+            )
+            self.send_models()
+            self._write_metrics_summary()
 
     def _receive_async_models(self):
         """Accept only fresh uploads and renormalize sample weights over them."""
@@ -477,14 +584,14 @@ class OursV2(Server):
                 client.next_task(train_data, label_info)
                 self._client_loaded_task[client.id] = next_task
 
-    def train_global_generator(self):
+    def train_global_generator(self, seen_classes=None):
         self.global_generator.train()
         self.critic.train()
         criterion_ce = nn.CrossEntropyLoss()
         MIN_BN_SAMPLES = 16 # Stabilize BN loss
 
         # Get only seen classes
-        seen_classes = self.get_seen_classes()
+        seen_classes = self.get_seen_classes() if seen_classes is None else list(seen_classes)
         if not seen_classes:
             print("No seen classes yet. Skipping generator training.")
             return
@@ -550,11 +657,11 @@ class OursV2(Server):
         
         return loss_bn
 
-    def train_global_classifier(self):
+    def train_global_classifier(self, seen_classes=None):
         self.global_model.train()
         self.global_generator.eval()
         
-        seen_classes = self.get_seen_classes()
+        seen_classes = self.get_seen_classes() if seen_classes is None else list(seen_classes)
         if not seen_classes:
             print("No seen classes yet. Skipping classifier training.")
             return

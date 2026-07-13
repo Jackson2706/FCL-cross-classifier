@@ -17,6 +17,7 @@ from flcore.metrics.average_anytime_accuracy import metric_average_anytime_accur
 from flcore.metrics.average_forgetting import metric_average_forgetting
 from flcore.metrics.backward_transfer import metric_backward_transfer
 from flcore.scheduler.task_scheduler import ASYNC_CONFIG_DEFAULTS
+from flcore.scheduler.consolidation import CONSOLIDATION_CONFIG_DEFAULTS
 from utils.data_utils import *
 
 import wandb
@@ -68,7 +69,10 @@ class Server(object):
 
         self.async_config = {
             key: getattr(args, key, default)
-            for key, default in ASYNC_CONFIG_DEFAULTS.items()
+            for key, default in {
+                **ASYNC_CONFIG_DEFAULTS,
+                **CONSOLIDATION_CONFIG_DEFAULTS,
+            }.items()
         }
 
         self.num_tasks = self._resolve_num_tasks(args)
@@ -195,6 +199,12 @@ class Server(object):
                         os.path.join(self.save_folder, "async_schedule.json"),
                         run_seed=getattr(self.args, "seed", 0),
                     )
+            consolidation = getattr(self, "consolidation_manager", None)
+            if consolidation is not None:
+                summary["consolidation"] = consolidation.summary()
+                consolidation.save_log(
+                    os.path.join(self.save_folder, "consolidation_log.json")
+                )
             summary_path = os.path.join(self.save_folder, "metrics_summary.json")
             with open(summary_path, mode="w") as file:
                 json.dump(summary, file, indent=2, sort_keys=True, allow_nan=False)

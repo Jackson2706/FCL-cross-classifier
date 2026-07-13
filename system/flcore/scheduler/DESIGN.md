@@ -54,6 +54,11 @@ not be the default because it confounds scheduling with a second algorithmic cha
 
 ## Generator and classifier consolidation
 
+**Phase 2c status:** IMPLEMENTED for the recommended `watermark` trigger. The
+`quorum` trigger is available as an explicit ablation; `periodic` remains reserved
+and raises a clear `NotImplementedError`. Boundary timeout is independently
+configured by `consolidation_timeout_rounds` and never reuses `max_task_lag`.
+
 The synchronous method consolidates once after every shared task boundary. Under
 desynchronization, the server should use a **completion watermark with bounded
 timeout**:

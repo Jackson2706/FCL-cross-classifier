@@ -17,15 +17,23 @@ class ReliabilityLogger:
         self.calibration_records = []
         self._batches = []
 
-    def add_batch(self, weights, labels, source_clients, correct, missing_signals=()):
+    def add_batch(
+        self, weights, labels, source_clients, correct, missing_signals=(),
+        density_gate=None, density_distance=None, density_tau=None,
+    ):
         try:
-            self._batches.append({
+            batch = {
                 "weights": weights.detach().cpu().float(),
                 "labels": labels.detach().cpu().long(),
                 "source_clients": source_clients.detach().cpu().long(),
                 "correct": correct.detach().cpu().bool(),
                 "missing_signals": list(missing_signals),
-            })
+            }
+            if density_gate is not None:
+                batch["density_gate"] = density_gate.detach().cpu().bool()
+                batch["density_distance"] = density_distance.detach().cpu().float()
+                batch["density_tau"] = float(density_tau)
+            self._batches.append(batch)
         except Exception:
             pass
 
@@ -82,6 +90,17 @@ class ReliabilityLogger:
                 },
                 "missing_signals": missing,
             }
+            gated_batches = [batch for batch in self._batches if "density_gate" in batch]
+            if gated_batches:
+                gates = torch.cat([batch["density_gate"] for batch in gated_batches])
+                distances = torch.cat([batch["density_distance"] for batch in gated_batches])
+                record["boundary"] = {
+                    "density_gate_accepted": int(gates.sum()),
+                    "density_gate_total": int(gates.numel()),
+                    "adversarial_replay_acceptance_ratio": float(gates.float().mean()),
+                    "mean_bn_distance": float(distances.mean()),
+                    "density_tau_by_batch": [batch["density_tau"] for batch in gated_batches],
+                }
             self.records.append(record)
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             self._write()

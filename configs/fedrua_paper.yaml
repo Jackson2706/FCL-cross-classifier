@@ -81,8 +81,16 @@ consolidation_trigger: watermark
 consolidation_timeout_rounds: null
 consolidation_quorum: 1.0
 
-# TODO(Phase 4): switch to fgsm once adversarial replay/density gating lands.
-boundary_mode: none
+# Boundary-preserving synthetic replay. A null density_tau uses each batch's
+# median teacher-BN distance, and a null pgd_alpha means adv_epsilon / 2.
+boundary_mode: fgsm
+adv_epsilon: 0.03
+pgd_steps: 3
+pgd_alpha: null
+lambda_adv: 1.0
+density_tau: null
+boundary_robust_eval: true
+robust_eval_max_batches: null
 robustness_mode: none
 model_heterogeneity: false
 client_model_pool: [resnet18]

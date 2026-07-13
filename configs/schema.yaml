@@ -30,6 +30,17 @@ kd_weight: 0.5
 # Enabled-path stability guard; non-positive disables clipping but still checks finiteness.
 generator_grad_clip: 10.0
 boundary_mode: none
+adv_epsilon: 0.03
+pgd_steps: 3
+# null uses adv_epsilon / 2.
+pgd_alpha: null
+lambda_adv: 1.0
+# null uses the per-batch median d_BN; samples strictly below it are accepted.
+density_tau: null
+# Robust evaluation runs only when boundary_mode is active.
+boundary_robust_eval: true
+# Optional development cap applied per client/test-task; null evaluates all batches.
+robust_eval_max_batches: null
 robustness_mode: none
 
 # All clients currently share one ResNet-18 model and use parameter averaging.

@@ -19,6 +19,7 @@ from flcore.metrics.backward_transfer import metric_backward_transfer
 from flcore.scheduler.task_scheduler import ASYNC_CONFIG_DEFAULTS
 from flcore.scheduler.consolidation import CONSOLIDATION_CONFIG_DEFAULTS
 from flcore.reliability.scorer import RELIABILITY_CONFIG_DEFAULTS
+from flcore.boundary.attacks import BOUNDARY_CONFIG_DEFAULTS
 from utils.data_utils import *
 
 import wandb
@@ -79,6 +80,10 @@ class Server(object):
             key: getattr(args, key, default)
             for key, default in RELIABILITY_CONFIG_DEFAULTS.items()
         }
+        self.boundary_config = {
+            key: getattr(args, key, default)
+            for key, default in BOUNDARY_CONFIG_DEFAULTS.items()
+        }
 
         self.num_tasks = self._resolve_num_tasks(args)
         # Compatibility alias for servers not yet migrated to the canonical name.
@@ -138,6 +143,7 @@ class Server(object):
             # Old JSON configs omit these fields; persist their effective defaults.
             resolved.update(self.async_config)
             resolved.update(self.reliability_config)
+            resolved.update(self.boundary_config)
             resolved.setdefault(
                 "generator_distillation",
                 bool(getattr(self.args, "generator_distillation", False)),
@@ -223,6 +229,9 @@ class Server(object):
                 consolidation.save_log(
                     os.path.join(self.save_folder, "consolidation_log.json")
                 )
+            boundary = getattr(self, "boundary_metrics", None)
+            if boundary:
+                summary.setdefault("robustness", {})["boundary"] = boundary
             summary_path = os.path.join(self.save_folder, "metrics_summary.json")
             with open(summary_path, mode="w") as file:
                 json.dump(summary, file, indent=2, sort_keys=True, allow_nan=False)

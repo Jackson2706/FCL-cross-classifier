@@ -5,6 +5,14 @@ import random
 import numpy as np
 import torch
 import torch.nn.functional as F
+from flcore.boundary.attacks import (
+    BOUNDARY_MODES,
+    density_gate,
+    density_gated_adversarial_loss,
+    fgsm_attack,
+    pgd_light_attack,
+)
+from flcore.boundary.evaluation import evaluate_robust_accuracy
 from flcore.clients.client_ourv2 import clientOursV2
 from flcore.reliability.calibration import expected_calibration_error
 from flcore.reliability.logging import ReliabilityLogger
@@ -244,6 +252,18 @@ class OursV2(Server):
             )
             if self.offlog else None
         )
+        self.boundary_mode = str(self.boundary_config["boundary_mode"]).lower()
+        if self.boundary_mode not in BOUNDARY_MODES:
+            raise ValueError(
+                f"Unknown boundary_mode: {self.boundary_mode}. "
+                f"Choose from: {sorted(BOUNDARY_MODES)}"
+            )
+        self.boundary_metrics = {
+            "mode": self.boundary_mode,
+            "consolidations": [],
+            "robust_accuracy": [],
+        } if self.boundary_mode != "none" else None
+        self._boundary_gate_batches = []
 
         gen_type = getattr(args, 'gen_type', 'advanced').lower()
         print(f"\n[Server] Initializing generator architecture: {gen_type.upper()}")
@@ -446,6 +466,7 @@ class OursV2(Server):
                 self.train_global_generator()
                 self.train_global_classifier()
             self._record_calibration(task=task, global_round=global_round)
+            self._record_boundary_robustness(task=task, global_round=global_round)
             self.visualize_synthetic_data(task)
             self.eval_task(task=task, glob_iter=task, flag="global")
             self.send_models()
@@ -573,6 +594,9 @@ class OursV2(Server):
                         seen_classes=event.globally_consolidated_classes
                     )
                 self._record_calibration(
+                    task=event.boundary_k, global_round=global_round
+                )
+                self._record_boundary_robustness(
                     task=event.boundary_k, global_round=global_round
                 )
             finally:
@@ -844,7 +868,7 @@ class OursV2(Server):
     def get_bn_loss(self, teacher_model, gen_imgs):
         return bn_feature_distance(teacher_model, gen_imgs, per_sample=False)
 
-    def _reliability_teacher_signals(self, imgs, labels):
+    def _reliability_teacher_signals(self, imgs, labels, require_bn=False):
         """Return ensemble logits, source IDs, source trust, and source BN distance."""
 
         batch_size = labels.numel()
@@ -872,7 +896,7 @@ class OursV2(Server):
         )[source_index]
 
         bn_distance = None
-        if self.reliability_scorer.mode in {"bn_realism", "multi_signal", "calibrated"}:
+        if require_bn or self.reliability_scorer.mode in {"bn_realism", "multi_signal", "calibrated"}:
             bn_distance = imgs.new_zeros(batch_size)
             for index, client_id in enumerate(teacher_ids):
                 mask = source_index == index
@@ -949,6 +973,48 @@ class OursV2(Server):
                 )
                 loss = torch.mean(weights * per_sample_ce)
 
+            density_mask = density_distance = density_threshold = None
+            if self.boundary_mode in {"fgsm", "pgd_light"}:
+                with torch.no_grad():
+                    _, _, _, density_distance = self._reliability_teacher_signals(
+                        imgs, batch_labels, require_bn=True
+                    )
+                    if density_distance is None:
+                        density_distance = imgs.new_zeros(current_batch_size)
+                    density_mask, density_threshold = density_gate(
+                        density_distance, self.boundary_config["density_tau"]
+                    )
+                clamp_min, clamp_max = self._input_bounds(imgs)
+                epsilon = float(self.boundary_config["adv_epsilon"])
+                if self.boundary_mode == "fgsm":
+                    adversarial_imgs = fgsm_attack(
+                        self.global_model, imgs, batch_labels, epsilon,
+                        clamp_min, clamp_max,
+                    )
+                else:
+                    adversarial_imgs = pgd_light_attack(
+                        self.global_model, imgs, batch_labels, epsilon,
+                        self.boundary_config["pgd_steps"],
+                        self.boundary_config["pgd_alpha"],
+                        clamp_min, clamp_max,
+                    )
+                adversarial_logits = self.global_model(adversarial_imgs)
+                adversarial_loss = density_gated_adversarial_loss(
+                    adversarial_logits, batch_labels, weights, density_mask,
+                    self.boundary_config["lambda_adv"],
+                )
+                loss = loss + adversarial_loss
+                self._boundary_gate_batches.append({
+                    "gate": density_mask.detach().cpu(),
+                    "distance": density_distance.detach().cpu(),
+                    "tau": density_threshold,
+                    "adversarial_loss": float(adversarial_loss.detach()),
+                })
+            elif self.boundary_mode != "none":
+                raise NotImplementedError(
+                    f"boundary_mode={self.boundary_mode} is reserved for Phase 4b"
+                )
+
             if self.reliability_logger is not None:
                 self.reliability_logger.add_batch(
                     weights,
@@ -956,6 +1022,9 @@ class OursV2(Server):
                     source_ids,
                     logits.detach().argmax(dim=1).eq(batch_labels),
                     self.reliability_scorer.last_missing_signals,
+                    density_gate=density_mask,
+                    density_distance=density_distance,
+                    density_tau=density_threshold,
                 )
             loss.backward()
             self.optimizer_c.step()
@@ -964,9 +1033,116 @@ class OursV2(Server):
             self.reliability_logger.finish_consolidation(
                 self.reliability_scorer.mode
             )
+        if self.boundary_mode in {"fgsm", "pgd_light"}:
+            gates = torch.cat([batch["gate"] for batch in self._boundary_gate_batches])
+            record = {
+                "consolidation": len(self.boundary_metrics["consolidations"]),
+                "accepted": int(gates.sum()),
+                "total": int(gates.numel()),
+                "adversarial_replay_acceptance_ratio": float(gates.float().mean()),
+                "mean_adversarial_loss": float(np.mean([
+                    batch["adversarial_loss"] for batch in self._boundary_gate_batches
+                ])),
+                "density_tau": self.boundary_config["density_tau"],
+                "density_tau_policy": (
+                    "per_batch_median" if self.boundary_config["density_tau"] is None
+                    else "fixed"
+                ),
+            }
+            self.boundary_metrics["consolidations"].append(record)
+            print(
+                "[Boundary] "
+                f"mode={self.boundary_mode} L_adv={record['mean_adversarial_loss']:.6f} "
+                f"density_acceptance={record['adversarial_replay_acceptance_ratio']:.6f} "
+                f"({record['accepted']}/{record['total']})"
+            )
+            self._boundary_gate_batches = []
 
     def KD_loss(self, student_logits, labels, T=2.0):
         return F.cross_entropy(student_logits / T, labels)
+
+    def _input_bounds(self, reference):
+        """Normalized valid image range used by CIFAR/ImageNet data pipelines."""
+
+        if "cifar" in self.dataset.lower():
+            mean = [0.5071, 0.4867, 0.4408]
+            std = [0.2675, 0.2565, 0.2761]
+        else:
+            mean = [0.485, 0.456, 0.406]
+            std = [0.229, 0.224, 0.225]
+        shape = (1, len(mean)) + (1,) * (reference.ndim - 2)
+        mean = reference.new_tensor(mean).view(shape)
+        std = reference.new_tensor(std).view(shape)
+        return -mean / std, (1.0 - mean) / std
+
+    def _record_boundary_robustness(self, task, global_round):
+        """Evaluate real test data under FGSM/PGD without changing RNG or mode."""
+
+        if (
+            self.boundary_mode == "none"
+            or not bool(self.boundary_config["boundary_robust_eval"])
+        ):
+            return
+        python_state = random.getstate()
+        numpy_state = np.random.get_state()
+        torch_state = torch.random.get_rng_state()
+        cuda_states = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        was_training = self.global_model.training
+        try:
+            self.global_model.eval()
+            per_attack = {}
+            epsilon = float(self.boundary_config["adv_epsilon"])
+            for attack in ("fgsm", "pgd_light"):
+                per_task = []
+                for test_task in range(min(int(task) + 1, self.num_tasks)):
+                    correct = total = 0
+                    for client in self.clients:
+                        loader = client.load_test_data(task=test_task)
+                        first_parameter = next(self.global_model.parameters())
+                        dummy = first_parameter.new_empty(1, 3, self.img_size, self.img_size)
+                        clamp_min, clamp_max = self._input_bounds(dummy)
+                        batch_correct, batch_total = evaluate_robust_accuracy(
+                            self.global_model, loader, self.device, attack, epsilon,
+                            self.boundary_config["pgd_steps"],
+                            self.boundary_config["pgd_alpha"], clamp_min, clamp_max,
+                            self.boundary_config["robust_eval_max_batches"],
+                        )
+                        correct += batch_correct
+                        total += batch_total
+                    per_task.append({
+                        "task": test_task,
+                        "correct": correct,
+                        "total": total,
+                        "accuracy": correct / total if total else None,
+                    })
+                valid = [item["accuracy"] for item in per_task if item["accuracy"] is not None]
+                per_attack[attack] = {
+                    "per_task": per_task,
+                    "average_accuracy": float(np.mean(valid)) if valid else None,
+                }
+            record = {
+                "task": int(task),
+                "global_round": int(global_round),
+                "epsilon": epsilon,
+                "pgd_steps": int(self.boundary_config["pgd_steps"]),
+                "pgd_alpha": self.boundary_config["pgd_alpha"],
+                **per_attack,
+            }
+            self.boundary_metrics["robust_accuracy"].append(record)
+            print(
+                "[Boundary Robustness] "
+                f"FGSM={per_attack['fgsm']['average_accuracy']} "
+                f"PGD={per_attack['pgd_light']['average_accuracy']}"
+            )
+        except Exception as error:
+            print(f"[Boundary Robustness] skipped: {error}")
+        finally:
+            self.global_model.train(was_training)
+            random.setstate(python_state)
+            np.random.set_state(numpy_state)
+            torch.random.set_rng_state(torch_state)
+            if cuda_states is not None:
+                torch.cuda.set_rng_state_all(cuda_states)
 
     def _record_calibration(self, task, global_round):
         """Best-effort ECE on real test predictions without perturbing RNG state."""

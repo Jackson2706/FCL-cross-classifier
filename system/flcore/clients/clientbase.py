@@ -21,7 +21,11 @@ class Client(object):
         self.t_angle_after = 0
         self.device = args.device
 
-        self.model = copy.deepcopy(args.model).to(self.device)
+        if getattr(args, "model_heterogeneity", False):
+            self.model = kwargs["model"].to(self.device)
+            self.model_type = kwargs["model_type"]
+        else:
+            self.model = copy.deepcopy(args.model).to(self.device)
         self.args = args
         self.algorithm = args.algorithm
         self.dataset = args.dataset

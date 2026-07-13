@@ -12,7 +12,11 @@ from datetime import datetime
 import numpy as np
 import torch
 import torch.nn.functional as F
-from flcore.metrics.accounting import CommunicationAccountant, ServerComputeTimer
+from flcore.metrics.accounting import (
+    CommunicationAccountant,
+    ServerComputeTimer,
+    estimate_model_bytes,
+)
 from flcore.metrics.average_anytime_accuracy import metric_average_anytime_accuracy
 from flcore.metrics.average_forgetting import metric_average_forgetting
 from flcore.metrics.backward_transfer import metric_backward_transfer
@@ -21,6 +25,11 @@ from flcore.scheduler.consolidation import CONSOLIDATION_CONFIG_DEFAULTS
 from flcore.reliability.scorer import RELIABILITY_CONFIG_DEFAULTS
 from flcore.boundary.attacks import BOUNDARY_CONFIG_DEFAULTS
 from flcore.robustness.scenarios import ROBUSTNESS_CONFIG_DEFAULTS
+from flcore.hetero.metrics import summarize_model_type_accuracy
+from flcore.hetero.model_factory import (
+    build_client_model,
+    resolve_heterogeneity_config,
+)
 from utils.data_utils import *
 
 import wandb
@@ -37,7 +46,13 @@ class Server(object):
         self.local_epochs = args.local_epochs
         self.batch_size = args.batch_size
         self.learning_rate = args.local_learning_rate
-        self.global_model = copy.deepcopy(args.model)
+        self.heterogeneity_config = resolve_heterogeneity_config(args)
+        if self.heterogeneity_config.enabled:
+            self.global_model = build_client_model(
+                self.heterogeneity_config.server_model, args
+            )
+        else:
+            self.global_model = copy.deepcopy(args.model)
         self.num_clients = args.num_clients
         self.join_ratio = args.join_ratio
         self.random_join_ratio = args.random_join_ratio
@@ -69,6 +84,7 @@ class Server(object):
         self.local_accuracy_matrix = []
         self.communication_accountant = CommunicationAccountant()
         self.server_compute_timer = ServerComputeTimer()
+        self.heterogeneity_metrics = None
 
         self.async_config = {
             key: getattr(args, key, default)
@@ -150,6 +166,13 @@ class Server(object):
             resolved.update(self.reliability_config)
             resolved.update(self.boundary_config)
             resolved.update(self.robustness_config)
+            if self.heterogeneity_config.enabled:
+                resolved.update({
+                    "model_heterogeneity": True,
+                    "client_model_pool": self.heterogeneity_config.client_model_pool,
+                    "server_model": self.heterogeneity_config.server_model,
+                    "aggregation_mode": self.heterogeneity_config.aggregation_mode,
+                })
             resolved.setdefault(
                 "generator_distillation",
                 bool(getattr(self.args, "generator_distillation", False)),
@@ -245,6 +268,13 @@ class Server(object):
                     or getattr(self, "client_trust", {}),
                     getattr(self, "client_info_dict", {}).keys(),
                 )
+            if self.heterogeneity_config.enabled:
+                summary["heterogeneity"] = self.heterogeneity_metrics or {
+                    "enabled": True,
+                    "aggregation_mode": self.heterogeneity_config.aggregation_mode,
+                    "per_model_type": {},
+                    "fairness_gap": None,
+                }
             summary_path = os.path.join(self.save_folder, "metrics_summary.json")
             with open(summary_path, mode="w") as file:
                 json.dump(summary, file, indent=2, sort_keys=True, allow_nan=False)
@@ -266,7 +296,23 @@ class Server(object):
             else:
                 raise NotImplementedError("Not supported dataset")
             print(label_info)
-            client = clientObj(self.args, id=i, train_data=train_data)
+            if self.heterogeneity_config.enabled:
+                pool = self.heterogeneity_config.client_model_pool
+                offset = int(getattr(self.args, "seed", 0)) % len(pool)
+                model_type = pool[(i + offset) % len(pool)]
+                client_model = build_client_model(model_type, self.args)
+                # Phase 6a validates that this architecture matches the server,
+                # so all FedAvg participants begin from identical parameters.
+                client_model.load_state_dict(self.global_model.state_dict())
+                client = clientObj(
+                    self.args,
+                    id=i,
+                    train_data=train_data,
+                    model=client_model,
+                    model_type=model_type,
+                )
+            else:
+                client = clientObj(self.args, id=i, train_data=train_data)
             self.clients.append(client)
 
             # update classes so far & current labels
@@ -276,6 +322,23 @@ class Server(object):
             client.file_name = self.file_name
             del client, train_data, label_info
             gc.collect()
+
+    def _record_heterogeneity_accuracy(self, per_client_totals):
+        if not self.heterogeneity_config.enabled:
+            return
+        parameter_bytes = {}
+        results = []
+        for client in self.clients:
+            model_type = client.model_type
+            parameter_bytes.setdefault(model_type, estimate_model_bytes(client.model))
+            totals = per_client_totals.get(client.id, {"correct": 0.0, "samples": 0})
+            results.append({"model_type": model_type, **totals})
+        metrics = summarize_model_type_accuracy(results, parameter_bytes)
+        self.heterogeneity_metrics = {
+            "enabled": True,
+            "aggregation_mode": self.heterogeneity_config.aggregation_mode,
+            **metrics,
+        }
 
     def select_clients(self):
         if self.random_join_ratio:
@@ -516,11 +579,19 @@ class Server(object):
     # evaluate after end 1 task
     def eval_task(self, task, glob_iter, flag):
         accuracy_on_all_task = []
+        per_client_totals = {
+            client.id: {"correct": 0.0, "samples": 0} for client in self.clients
+        }
 
         for t in range(self.num_tasks):
             stats = self.test_metrics(task=t, glob_iter=glob_iter, flag="off")
             test_acc = sum(stats[2]) * 1.0 / sum(stats[1])
             accuracy_on_all_task.append(test_acc)
+            for client_id, samples, correct in zip(*stats):
+                per_client_totals[client_id]["correct"] += float(correct)
+                per_client_totals[client_id]["samples"] += int(samples)
+
+        self._record_heterogeneity_accuracy(per_client_totals)
 
         if flag == "global":
             self.global_accuracy_matrix.append(accuracy_on_all_task)
@@ -553,11 +624,19 @@ class Server(object):
     # evaluate after end 1 task
     def eval_task_(self, task, glob_iter, flag):
         accuracy_on_all_task = []
+        per_client_totals = {
+            client.id: {"correct": 0.0, "samples": 0} for client in self.clients
+        }
 
         for t in range(self.num_tasks):
             stats = self.test_metrics_(task=t, glob_iter=glob_iter, flag="off")
             test_acc = sum(stats[2]) * 1.0 / sum(stats[1])
             accuracy_on_all_task.append(test_acc)
+            for client_id, samples, correct in zip(*stats):
+                per_client_totals[client_id]["correct"] += float(correct)
+                per_client_totals[client_id]["samples"] += int(samples)
+
+        self._record_heterogeneity_accuracy(per_client_totals)
 
         if flag == "global":
             self.global_accuracy_matrix.append(accuracy_on_all_task)

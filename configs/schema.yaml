@@ -73,7 +73,9 @@ privacy_proxies: false
 memorization_tau: null
 privacy_max_samples: 256
 
-# All clients currently share one ResNet-18 model and use parameter averaging.
+# Phase 6a supports the listed CIFAR classifiers. FedAvg requires a homogeneous
+# pool whose architecture also matches server_model; cross-architecture
+# distillation aggregation is reserved for Phase 6b.
 model_heterogeneity: false
 client_model_pool:
   - resnet18

@@ -273,30 +273,57 @@ if __name__ == "__main__":
     parser.add_argument('--replay_ratio', type=float, default=1.0, help='Ratio of replayed samples to generated samples in the augmented dataset (only for Ours_v2)')
     args = parser.parse_args()
 
+    _is_yaml = str(args.cfp).lower().endswith(('.yaml', '.yml'))
     with open(args.cfp, 'r') as f:
-        cfdct = json.load(f)
-    if args.note is not None:
-        cfdct['note'] = args.note
-    if args.nt is not None:
-        cfdct['num_tasks'] = args.nt
+        if _is_yaml:
+            import yaml
+            cfdct = yaml.safe_load(f)
+        else:
+            cfdct = json.load(f)
+
+    # CLI flags that mirror config keys. For legacy JSON configs these overrides are
+    # applied UNCONDITIONALLY (unchanged historical behavior). For YAML configs the
+    # file is authoritative: a mirror override is applied only when the CLI flag was
+    # explicitly provided (its value differs from the argparse default) or the key is
+    # absent from the config -- so e.g. generated_samples_per_class in the YAML is not
+    # clobbered by the argparse default.
+    _cli_mirror_keys = ['wandb', 'offlog', 'log', 'debug', 'seval', 'teval',
+                        'pca_eval', 'generated_samples_per_class', 'gen_type',
+                        'simulate_bad_clients', 'use_filter', 'filter_threshold',
+                        'run_name', 'replay_ratio']
+    if _is_yaml:
+        _defaults = parser.parse_args([])
+        if args.note is not None:
+            cfdct['note'] = args.note
+        if args.nt is not None:
+            cfdct['num_tasks'] = args.nt
+        cfdct.setdefault('nt', args.nt)
+        for _k in _cli_mirror_keys:
+            if getattr(args, _k) != getattr(_defaults, _k) or _k not in cfdct:
+                cfdct[_k] = getattr(args, _k)
+    else:
+        if args.note is not None:
+            cfdct['note'] = args.note
+        if args.nt is not None:
+            cfdct['num_tasks'] = args.nt
 
 
-    cfdct['nt'] = args.nt
-    cfdct['wandb'] = args.wandb
-    cfdct['offlog'] = args.offlog
-    cfdct['log'] = args.log
-    cfdct['debug'] = args.debug
-    cfdct['seval'] = args.seval
-    cfdct['teval'] = args.teval
-    cfdct['pca_eval'] = args.pca_eval
-    cfdct['generated_samples_per_class'] = args.generated_samples_per_class
-    cfdct['gen_type'] = args.gen_type
-    # cfdct['num_clients'] = args.num_clients
-    cfdct['simulate_bad_clients'] = args.simulate_bad_clients
-    cfdct['use_filter'] = args.use_filter   
-    cfdct['filter_threshold'] = args.filter_threshold
-    cfdct['run_name'] = args.run_name
-    cfdct['replay_ratio'] = args.replay_ratio
+        cfdct['nt'] = args.nt
+        cfdct['wandb'] = args.wandb
+        cfdct['offlog'] = args.offlog
+        cfdct['log'] = args.log
+        cfdct['debug'] = args.debug
+        cfdct['seval'] = args.seval
+        cfdct['teval'] = args.teval
+        cfdct['pca_eval'] = args.pca_eval
+        cfdct['generated_samples_per_class'] = args.generated_samples_per_class
+        cfdct['gen_type'] = args.gen_type
+        # cfdct['num_clients'] = args.num_clients
+        cfdct['simulate_bad_clients'] = args.simulate_bad_clients
+        cfdct['use_filter'] = args.use_filter
+        cfdct['filter_threshold'] = args.filter_threshold
+        cfdct['run_name'] = args.run_name
+        cfdct['replay_ratio'] = args.replay_ratio
     print(args.seval)
     print(args.teval)
     print(args.pca_eval)

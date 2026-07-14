@@ -17,13 +17,20 @@ default configuration reproduces the conference `Ours_v2` (FEDRUA) behavior.
 - `system/main.py` loads the config into an `argparse.Namespace`; **every journal key is read
   via `getattr(args, key, default)`.** Keys absent from the config fall back to their safe
   (off) defaults, so old configs keep the conference code path.
-- **Today, journal keys are set inside the JSON config passed to `--cfp`** (they are *not*
-  individual CLI flags). The canonical YAML configs `configs/fedrua_paper.yaml` and
-  `configs/legacy_code.yaml` document every key; a small **YAML launcher that lets `--cfp`
-  load `.yaml` directly is deferred (Phase 7, pending)**. Until then, use the JSON method below.
+- Journal keys are set in the config file passed to `--cfp`, which accepts **either JSON or YAML**
+  (`.yaml`/`.yml`). YAML configs are **config-authoritative** (a CLI flag overrides a YAML key only
+  when explicitly passed), so `configs/fedrua_paper.yaml` and `configs/legacy_code.yaml` run
+  directly. JSON keeps its legacy behavior (the mirrored CLI flags always override). Journal keys
+  are *not* individual CLI flags.
 - `configs/schema.yaml` is the authoritative list of all journal keys and their defaults.
 
-### Enabling journal features today (JSON method)
+### Running a YAML config directly
+
+```bash
+conda run -n FCL python system/main.py --cfp configs/fedrua_paper.yaml --offlog True --log True
+```
+
+### Enabling journal features from a JSON config
 
 Copy the base config and add the keys you need:
 
@@ -171,17 +178,28 @@ server distillation cost, capacity gap.
 
 ---
 
-## 5. Multi-seed aggregation & plotting (pending — Phase 7 tooling, deferred to Codex)
+## 5. Multi-seed aggregation & plotting
 
-The following helper scripts are **not yet implemented** (deferred while the Codex CLI is
-rate-limited). See `EXPERIMENT_PLAN.md` for the intended commands. Once added:
+**Multi-seed aggregation** (`scripts/aggregate_seeds.py`, pure stdlib) reads `metrics_summary.json`
+(+ `resolved_config.json`) from many run dirs, groups runs that differ only by seed, and writes
+mean/std/n tables:
 
-- `scripts/aggregate_seeds.py` — aggregate `metrics_summary.json` across seeds → mean ± std
-  (`aggregated.csv` / `aggregated.json`).
-- `scripts/plots.py` — journal figures: accuracy/forgetting over tasks, reliability histograms,
-  calibration curves, margin distributions, accuracy-vs-communication/runtime Pareto, async
-  temporal-lag, model-heterogeneity fairness.
-- YAML launcher: extend `--cfp` to load `configs/*.yaml` directly.
+```bash
+conda run -n FCL python scripts/aggregate_seeds.py \
+  --runs "out/CIFAR100_Ours_v2_*seed*" --group-by note --out out/aggregated
+# -> out/aggregated.json (per-group per-metric mean/std/n/values) and out/aggregated.csv
+```
 
-Until then, all metrics are already emitted as JSON/CSV per run (Section 2), so aggregation can
-be done manually or with a short script over the `metrics_summary.json` files.
+**Plotting** (`scripts/plots.py`, matplotlib) reads a run dir's machine-readable logs and writes
+PNGs; each plot is skipped cleanly if its source file is absent:
+
+```bash
+conda run -n FCL python scripts/plots.py \
+  --run-dir out/CIFAR100_Ours_v2_ResNet18_adam_lr0.05_fedrua_paper \
+  --out-dir figures --which all
+# plots: accuracy, forgetting, reliability, calibration, margin, async, heterogeneity, pareto
+# (pareto reads an aggregated.json; pass --run-dir out/aggregated.json for it)
+```
+
+If matplotlib is ever missing: `conda run -n FCL pip install matplotlib`.
+All metrics are also emitted as JSON/CSV per run (Section 2), so custom analysis is easy.

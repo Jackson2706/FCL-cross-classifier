@@ -10,8 +10,8 @@ Conventions:
 - Use `--offlog True --log True` and a distinct `--note` per run so output dirs don't collide.
 - Datasets: CIFAR-10, CIFAR-100 (`hparams/cifar100/Ours_v2_cifar100.json`), ImageNet-1K,
   Camelyon17 (`hparams/wilds/Ours_v2_wilds.json`). Examples below use CIFAR-100.
-- Items marked ⏳ depend on tooling deferred to Codex (Phase 7): `scripts/aggregate_seeds.py`,
-  `scripts/plots.py`, and the YAML launcher.
+- Tooling available: `--cfp` accepts YAML directly, `scripts/aggregate_seeds.py` (multi-seed
+  aggregation), and `scripts/plots.py` (figures). See `EXPERIMENTS.md §5`.
 
 ---
 
@@ -26,13 +26,13 @@ done
 
 ## 2. Paper method (FEDRUA full)
 Config `configs/fedrua_paper.yaml` (reliability_mode=multi_signal, generator_distillation=true,
-boundary_mode=fgsm, 20 clients / 200 samples). Build a JSON equivalent per seed (or use the YAML
-launcher ⏳), then:
+boundary_mode=fgsm, 20 clients / 200 samples). Runs directly via the YAML launcher; vary the seed
+by copying the YAML (it is config-authoritative):
 ```bash
-# once configs/fedrua_paper.yaml is JSON-ified or the YAML launcher lands:
 for s in 0 1 2; do
-  conda run -n FCL python system/main.py --cfp <fedrua_paper.seed$s.json> \
-    --offlog True --log True --note "fedrua_paper_seed$s"
+  sed "s/^seed:.*/seed: $s/; s/^note:.*/note: fedrua_paper_seed$s/" \
+      configs/fedrua_paper.yaml > /tmp/fedrua_seed$s.yaml
+  conda run -n FCL python system/main.py --cfp /tmp/fedrua_seed$s.yaml --offlog True --log True
 done
 ```
 
@@ -109,13 +109,13 @@ done
 ```
 Report per-model-type accuracy, fairness gap, comm-by-architecture, server distillation cost.
 
-## 8. Multi-seed aggregation ⏳ (pending Phase 7 tooling)
+## 8. Multi-seed aggregation
 ```bash
 conda run -n FCL python scripts/aggregate_seeds.py \
   --runs "out/CIFAR100_Ours_v2_*_seed*" --group-by note --out out/aggregated
 ```
 
-## 9. Plotting ⏳ (pending Phase 7 tooling)
+## 9. Plotting
 ```bash
 conda run -n FCL python scripts/plots.py --run-dir out/aggregated --out-dir figures/ --which all
 ```
@@ -125,6 +125,6 @@ conda run -n FCL python scripts/plots.py --run-dir out/aggregated --out-dir figu
 ## Notes
 - Full CIFAR-100 FEDRUA ≈ 5 tasks × 50 rounds × 5 local epochs + 2000 generator steps/task; budget
   GPU time accordingly. ImageNet-1K and multi-seed sweeps are the largest cost — stage them.
-- Every run already emits machine-readable JSON/CSV (see `EXPERIMENTS.md §2`), so aggregation/plots
-  can be scripted over `metrics_summary.json` even before the Phase-7 helpers land.
+- Every run emits machine-readable JSON/CSV (see `EXPERIMENTS.md §2`); `scripts/aggregate_seeds.py`
+  and `scripts/plots.py` consume these directly.
 - Keep `seed` fixed within a comparison group; vary only the ablated axis.

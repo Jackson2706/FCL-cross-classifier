@@ -7,8 +7,6 @@ import torch.nn as nn
 from flcore.clients.clientbase import Client
 from flcore.utils_core.AFFCL_utils import Meter, str_in_list
 
-import wandb
-
 eps = 1e-30
 
 class ClientAFFCL(Client):

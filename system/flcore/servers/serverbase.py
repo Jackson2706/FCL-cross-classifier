@@ -36,9 +36,6 @@ from flcore.hetero.model_factory import (
 from flcore.utils.json_io import atomic_write_json
 from utils.data_utils import *
 
-import wandb
-
-
 class Server(object):
     def __init__(self, args, times):
         # Set up the main attributes
@@ -65,6 +62,7 @@ class Server(object):
         self.algorithm = args.algorithm
         self.time_threthold = args.time_threthold
         self.offlog = args.offlog
+        self.tracker = None
         self.save_folder = f"{args.out_folder}/{args.dataset}_{args.algorithm}_{args.model_str}_{args.optimizer}_lr{args.local_learning_rate}_{args.note}" if args.note else f"{args.out_folder}/{args.dataset}_{args.algorithm}_{args.model_str}_{args.optimizer}_lr{args.local_learning_rate}"
         if self.offlog:    
             if os.path.exists(self.save_folder):
@@ -503,8 +501,8 @@ class Server(object):
                     subdir = os.path.join(self.save_folder, f"Client_Local/Client_{c.id}")
                     log_key = f"Client_Local/Client_{c.id}/Averaged Test Accurancy"
 
-                if self.args.wandb:
-                    wandb.log({log_key: test_acc}, step=glob_iter)
+                if self.tracker is not None:
+                    self.tracker.log({log_key: test_acc}, step=glob_iter)
                 
                 if self.offlog:
                     os.makedirs(subdir, exist_ok=True)
@@ -544,8 +542,8 @@ class Server(object):
                     subdir = os.path.join(self.save_folder, f"Client_Local/Client_{c.id}")
                     log_key = f"Client_Local/Client_{c.id}/Averaged Test Accurancy"
 
-                if self.args.wandb:
-                    wandb.log({log_key: test_acc}, step=glob_iter)
+                if self.tracker is not None:
+                    self.tracker.log({log_key: test_acc}, step=glob_iter)
 
                 if self.offlog:
                     os.makedirs(subdir, exist_ok=True)
@@ -623,8 +621,8 @@ class Server(object):
             print(f"Local Averaged Test Accuracy: {test_acc}")
             print(f"Local Averaged Test Loss: {train_loss}")
 
-        if self.args.wandb:
-            wandb.log(log_keys, step=glob_iter)
+        if self.tracker is not None:
+            self.tracker.log(log_keys, step=glob_iter)
 
         if self.offlog:
             os.makedirs(subdir, exist_ok=True)
@@ -671,8 +669,8 @@ class Server(object):
 
         forgetting = metric_average_forgetting(int(task % self.num_tasks), accuracy_matrix)
 
-        if self.args.wandb:
-            wandb.log({log_key: forgetting}, step=glob_iter)
+        if self.tracker is not None:
+            self.tracker.log({log_key: forgetting}, step=glob_iter)
 
         print(f"{log_key}: {forgetting:.4f}")
 
@@ -719,8 +717,8 @@ class Server(object):
 
         forgetting = metric_average_forgetting(int(task % self.num_tasks), accuracy_matrix)
 
-        if self.args.wandb:
-            wandb.log({log_key: forgetting}, step=glob_iter)
+        if self.tracker is not None:
+            self.tracker.log({log_key: forgetting}, step=glob_iter)
 
         print(f"{log_key}: {forgetting:.4f}")
 

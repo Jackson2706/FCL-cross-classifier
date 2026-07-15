@@ -1,8 +1,27 @@
 # Journal simulation configuration defaults.
 #
-# These keys are intentionally not wired into system/main.py yet. Journal modules
-# should read them with getattr(args, "<key>", <default>) so legacy JSON configs
+# Journal modules read optional keys with safe defaults so legacy JSON configs
 # continue to follow the current Ours_v2 code path.
+
+# Optional experiment tracking. Disabled means no wandb import or service.
+wandb:
+  enabled: false
+  mode: online
+  project: FEDRUA-Journal
+  entity: null
+  group: null
+  job_type: train
+  name: null
+  tags: []
+  notes: null
+  log_model: false
+  watch_model: false
+  log_gradients: false
+  log_freq: 1
+  log_generated_samples: false
+  max_logged_images: 32
+  privacy_safe_mode: true
+  resume: allow
 
 # Asynchronous task scheduling is disabled in the legacy path. The distribution
 # value is retained as the future scheduler's default mode when async_mode is set.

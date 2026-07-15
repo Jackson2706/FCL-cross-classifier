@@ -38,8 +38,7 @@ from flcore.trainmodel.models import *
 from flcore.trainmodel.transformer import *
 from flcore.trainmodel.vit_prompt_l2p import *
 from utils.seeding import seed_everything
-
-import wandb
+from flcore.tracking import WandbTracker, normalize_wandb_config
 
 warnings.simplefilter("ignore")
 
@@ -48,23 +47,6 @@ def run(args):
     # Previously only Torch was seeded, leaving NumPy-driven client selection
     # nondeterministic. Seed all training RNGs before any model/server is built.
     args.seed = seed_everything(getattr(args, "seed", 0))
-
-    if args.wandb:
-        # Determine the run name based on whether --run_name was provided
-        if hasattr(args, 'run_name') and args.run_name is not None:
-            custom_run_name = args.run_name
-        else:
-            if args.algorithm == "Ours_v2":
-                custom_run_name = f"{args.num_clients}_{args.gen_type}_{args.generated_samples_per_class}samples-per-class_{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}_{args.note}" if args.note else f"{args.gen_type}_{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}"
-            else:
-                custom_run_name = f"{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}_{args.note}" if args.note else f"{args.dataset}_{args.model}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}"
-
-        wandb.init(
-            project="FCL",
-            entity="jackson2706",
-            config=args, 
-            name=custom_run_name, 
-        )
 
     time_list = []
     model_str = args.model
@@ -239,7 +221,20 @@ def run(args):
             print(args.algorithm)
             raise NotImplementedError
 
-        server.train()
+        tracker_config = normalize_wandb_config(args)
+        if tracker_config["enabled"] and tracker_config["name"] is None:
+            if getattr(args, "run_name", None) is not None:
+                tracker_config["name"] = args.run_name
+            elif args.algorithm == "Ours_v2":
+                tracker_config["name"] = f"{args.num_clients}_{args.gen_type}_{args.generated_samples_per_class}samples-per-class_{args.dataset}_{model_str}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}_{args.note}" if args.note else f"{args.gen_type}_{args.dataset}_{model_str}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}"
+            else:
+                tracker_config["name"] = f"{args.dataset}_{model_str}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}_{args.note}" if args.note else f"{args.dataset}_{model_str}_{args.algorithm}_{args.optimizer}_lr{args.local_learning_rate}"
+        tracker = WandbTracker(tracker_config, vars(args), server.save_folder)
+        server.tracker = tracker
+        try:
+            server.train()
+        finally:
+            tracker.finish()
 
         time_list.append(time.time()-start)
 

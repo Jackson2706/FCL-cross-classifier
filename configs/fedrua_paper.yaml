@@ -13,7 +13,25 @@ seed: 0
 
 log: true
 offlog: false
-wandb: false
+# Opt-in example: set enabled true to create a local, no-login offline run.
+wandb:
+  enabled: false
+  mode: offline
+  project: FEDRUA-Journal
+  entity: null
+  group: null
+  job_type: train
+  name: null
+  tags: []
+  notes: null
+  log_model: false
+  watch_model: false
+  log_gradients: false
+  log_freq: 1
+  log_generated_samples: false
+  max_logged_images: 32
+  privacy_safe_mode: true
+  resume: allow
 out_folder: out
 note: fedrua_paper
 

@@ -203,3 +203,86 @@ conda run -n FCL python scripts/plots.py \
 
 If matplotlib is ever missing: `conda run -n FCL pip install matplotlib`.
 All metrics are also emitted as JSON/CSV per run (Section 2), so custom analysis is easy.
+
+---
+
+## 6. Weights & Biases (W&B) experiment tracking
+
+W&B is **optional, config-driven, and safe by default** (disabled). Local CSV/JSON logging is
+always produced regardless of W&B. A single `WandbTracker` (`system/flcore/tracking/`) owns all
+W&B calls; a logging failure never crashes training.
+
+### Enabling (YAML config-authoritative)
+
+```yaml
+wandb:
+  enabled: true
+  mode: online            # online | offline | disabled
+  project: FEDRUA-Journal
+  entity: null            # your W&B entity (null = default)
+  group: null
+  job_type: train
+  name: null              # null -> auto-generated descriptive name
+  tags: []
+  privacy_safe_mode: true # aggregates/scalars only; NO raw client data/images/samples
+  log_model: false
+  log_generated_samples: false
+  resume: allow
+```
+
+- **Legacy compatibility:** the old boolean `--wandb True` / JSON `"wandb": true` still works and
+  maps to an online run; default (`False`/absent) = disabled. `enabled: false` forces disabled
+  regardless of `mode`.
+- **Modes:** `disabled` = pure no-op (no import, no network). `offline` = local only, **no login
+  required**. `online` = cloud sync; on credential/network failure it **auto-falls back** to
+  offline then disabled with one warning (training continues).
+- Each run writes `<run_dir>/wandb_run.json` (`run_id`, `mode`, `project`, `entity`, `name`, `url`).
+
+### Commands
+
+```bash
+# Disabled (default) — nothing sent anywhere, local CSV/JSON only:
+conda run -n FCL python system/main.py --cfp configs/legacy_code.yaml --offlog True --log True
+
+# Offline (no login) — set WANDB_DIR to keep the local run out of the repo:
+WANDB_DIR=/tmp/journal-wandb conda run -n FCL python system/main.py \
+  --cfp configs/fedrua_paper.yaml --offlog True --log True   # fedrua_paper.yaml ships wandb.mode=offline
+
+# Online — requires `wandb login` once; then set wandb.mode: online in the config.
+
+# Sync an offline run to the cloud later:
+wandb sync /tmp/journal-wandb/wandb/offline-run-*
+```
+
+### What gets logged (namespaced)
+
+`eval/*` (avg_accuracy, forgetting, bwt, aaa, task_accuracy/task_<id>), `generator/loss_{total,cls,kd,bn}`,
+`classifier/loss_{replay,adv}`, `reliability/{mean,std,min,max,accepted_ratio}`,
+`boundary/{margin_mean,margin_std,robust_acc_fgsm,robust_acc_pgd_light}`, `communication/*_gb`,
+`runtime/*_seconds`, `gpu/*` (when CUDA present), `async/*`, `robustness/*`, `heterogeneity/*`.
+A section only appears when its module is active. Use the `group`/`tags`/`job_type` fields to compare
+baseline vs journal variants, sync vs async, reliability/boundary modes, robustness, heterogeneity,
+and seeds on one dashboard.
+
+### Privacy
+
+With `privacy_safe_mode: true` (default), only scalar aggregates are logged — **never** raw client
+data, medical images, generated samples, logits, gradients, schedules, or per-client accuracy keys.
+The run config is sanitized (paths/device-ids/host/secrets stripped) before upload. Do not set
+`log_generated_samples`/`log_model` true for sensitive datasets.
+
+### Inspecting an offline run locally
+
+```bash
+python - <<'PY'
+from wandb.sdk.internal import datastore
+from wandb.proto import wandb_internal_pb2 as pb
+ds = datastore.DataStore(); ds.open_for_scan("<offline-run>/run-XXXX.wandb")
+keys = set()
+while (rec := ds.scan_data()) is not None:
+    r = pb.Record(); r.ParseFromString(rec)
+    if r.WhichOneof("record_type") == "history":
+        keys |= {i.key for i in r.history.item}
+print(sorted(k for k in keys if not k.startswith("_")))
+PY
+```

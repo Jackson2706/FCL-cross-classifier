@@ -12,6 +12,9 @@ Conventions:
   Camelyon17 (`hparams/wilds/Ours_v2_wilds.json`). Examples below use CIFAR-100.
 - Tooling available: `--cfp` accepts YAML directly, `scripts/aggregate_seeds.py` (multi-seed
   aggregation), and `scripts/plots.py` (figures). See `EXPERIMENTS.md §5`.
+- W&B tracking is optional/off by default. To track any run below, add a `wandb:` block to its
+  config (`enabled: true`, `mode: online`/`offline`, `privacy_safe_mode: true`) — see `EXPERIMENTS.md §6`.
+  Use `group`/`tags` to compare baseline vs journal variants, sync vs async, and seeds on one dashboard.
 
 ---
 

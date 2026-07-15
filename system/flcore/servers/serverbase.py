@@ -33,6 +33,7 @@ from flcore.hetero.model_factory import (
     build_client_model,
     resolve_heterogeneity_config,
 )
+from flcore.utils.json_io import atomic_write_json
 from utils.data_utils import *
 
 import wandb
@@ -161,8 +162,10 @@ class Server(object):
                 if key == "model":
                     continue
                 try:
-                    json.dumps(value, allow_nan=False)
-                except (TypeError, ValueError):
+                    # Type-check here; atomic_write_json performs the finite-value
+                    # sanitization for JSON-compatible values below.
+                    json.dumps(value)
+                except TypeError:
                     continue
                 resolved[key] = value
 
@@ -195,11 +198,9 @@ class Server(object):
             resolved.setdefault("seed", int(getattr(self.args, "seed", 0)))
 
             config_path = os.path.join(self.save_folder, "resolved_config.json")
-            with open(config_path, mode="w") as file:
-                json.dump(resolved, file, indent=2, sort_keys=True, allow_nan=False)
-                file.write("\n")
-        except Exception:
-            pass
+            atomic_write_json(config_path, resolved, "resolved_config.json")
+        except Exception as error:
+            print(f"[JSON] Warning: could not write resolved_config.json: {error}")
 
     @staticmethod
     def _summarize_accuracy_matrix(accuracy_matrix):
@@ -265,6 +266,23 @@ class Server(object):
                 consolidation.save_log(
                     os.path.join(self.save_folder, "consolidation_log.json")
                 )
+            reliability = getattr(self, "reliability_logger", None)
+            if (
+                reliability is not None
+                and str(self.reliability_config.get("reliability_mode", "none")).lower()
+                != "none"
+            ):
+                latest = reliability.records[-1] if reliability.records else None
+                calibration = (
+                    reliability.calibration_records[-1]
+                    if reliability.calibration_records else None
+                )
+                if latest is not None or calibration is not None:
+                    summary["reliability"] = dict(latest or {})
+                    summary["reliability"].update({
+                        "ece": calibration.get("ece") if calibration else None,
+                        "latest_calibration": calibration,
+                    })
             boundary = getattr(self, "boundary_metrics", None)
             if boundary:
                 summary.setdefault("robustness", {})["boundary"] = boundary
@@ -291,11 +309,9 @@ class Server(object):
                     self.server_distillation_timer.as_dict()
                 )
             summary_path = os.path.join(self.save_folder, "metrics_summary.json")
-            with open(summary_path, mode="w") as file:
-                json.dump(summary, file, indent=2, sort_keys=True, allow_nan=False)
-                file.write("\n")
-        except Exception:
-            pass
+            atomic_write_json(summary_path, summary, "metrics_summary.json")
+        except Exception as error:
+            print(f"[JSON] Warning: could not write metrics_summary.json: {error}")
 
     def set_clients(self, clientObj):
         for i in range(self.num_clients):
@@ -474,7 +490,10 @@ class Server(object):
             tot_correct.append(ct*1.0)
             num_samples.append(ns)
 
-            test_acc = sum(tot_correct)*1.0 / sum(num_samples)
+            denominator = sum(num_samples)
+            if denominator == 0:
+                print("[Evaluation] Warning: zero test samples; reporting accuracy 0.0.")
+            test_acc = sum(tot_correct) * 1.0 / denominator if denominator else 0.0
     
             if flag != "off":
                 if flag == "global":
@@ -512,7 +531,10 @@ class Server(object):
             tot_correct.append(ct * 1.0)
             num_samples.append(ns)
 
-            test_acc = sum(tot_correct) * 1.0 / sum(num_samples)
+            denominator = sum(num_samples)
+            if denominator == 0:
+                print("[Evaluation] Warning: zero test samples; reporting accuracy 0.0.")
+            test_acc = sum(tot_correct) * 1.0 / denominator if denominator else 0.0
 
             if flag != "off":
                 if flag == "global":
@@ -558,8 +580,14 @@ class Server(object):
     def eval(self, task, glob_iter, flag):
         stats = self.test_metrics(task, glob_iter, flag=flag)
         stats_train = self.train_metrics(task=task)
-        test_acc = sum(stats[2])*1.0 / sum(stats[1])
-        train_loss = sum(stats_train[2])*1.0 / sum(stats_train[1])
+        test_denominator = sum(stats[1])
+        train_denominator = sum(stats_train[1])
+        if test_denominator == 0:
+            print("[Evaluation] Warning: zero test samples; reporting accuracy 0.0.")
+        if train_denominator == 0:
+            print("[Evaluation] Warning: zero train samples; reporting loss 0.0.")
+        test_acc = sum(stats[2]) * 1.0 / test_denominator if test_denominator else 0.0
+        train_loss = sum(stats_train[2]) * 1.0 / train_denominator if train_denominator else 0.0
         if flag == "global":
             subdir = os.path.join(self.save_folder, "Global")
             log_keys = {
@@ -619,7 +647,10 @@ class Server(object):
 
         for t in range(self.num_tasks):
             stats = self.test_metrics(task=t, glob_iter=glob_iter, flag="off")
-            test_acc = sum(stats[2]) * 1.0 / sum(stats[1])
+            denominator = sum(stats[1])
+            if denominator == 0:
+                print("[Evaluation] Warning: zero test samples; reporting accuracy 0.0.")
+            test_acc = sum(stats[2]) * 1.0 / denominator if denominator else 0.0
             accuracy_on_all_task.append(test_acc)
             for client_id, samples, correct in zip(*stats):
                 per_client_totals[client_id]["correct"] += float(correct)
@@ -664,7 +695,10 @@ class Server(object):
 
         for t in range(self.num_tasks):
             stats = self.test_metrics_(task=t, glob_iter=glob_iter, flag="off")
-            test_acc = sum(stats[2]) * 1.0 / sum(stats[1])
+            denominator = sum(stats[1])
+            if denominator == 0:
+                print("[Evaluation] Warning: zero test samples; reporting accuracy 0.0.")
+            test_acc = sum(stats[2]) * 1.0 / denominator if denominator else 0.0
             accuracy_on_all_task.append(test_acc)
             for client_id, samples, correct in zip(*stats):
                 per_client_totals[client_id]["correct"] += float(correct)

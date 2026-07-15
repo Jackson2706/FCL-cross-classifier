@@ -9,6 +9,7 @@ from typing import Dict, Iterable, Mapping, Optional, Tuple
 
 import torch
 from torch import nn
+from flcore.utils.json_io import atomic_write_json
 
 
 CONSOLIDATION_CONFIG_DEFAULTS = {
@@ -256,6 +257,4 @@ class ConsolidationManager:
     def save_log(self, path):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w") as handle:
-            json.dump(self._events, handle, indent=2, sort_keys=True, allow_nan=False)
-            handle.write("\n")
+        atomic_write_json(path, self._events, "consolidation_log.json")

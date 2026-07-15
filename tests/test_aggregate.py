@@ -7,6 +7,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 import aggregate_seeds as agg
+import plots
 
 
 def test_flatten():
@@ -59,9 +60,25 @@ def test_strip_seed_grouping():
     assert len(groups["baseline"]) == 2
 
 
+def test_boundary_margin_extractor_uses_tasks():
+    boundary_log = {
+        "tasks": [{
+            "task": 0,
+            "real_test": {
+                "true_class_margin": {
+                    "histogram": {"bin_edges": [-1.0, 0.0, 1.0], "counts": [2, 3]}
+                }
+            },
+        }]
+    }
+    histogram = plots.extract_margin_histogram(boundary_log)
+    assert histogram["counts"] == [2, 3]
+
+
 if __name__ == "__main__":
     test_flatten()
     test_aggregate_metrics_mean_std_n()
     test_single_value_std_zero()
     test_strip_seed_grouping()
+    test_boundary_margin_extractor_uses_tasks()
     print("aggregate tests passed")

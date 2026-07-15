@@ -146,19 +146,30 @@ def plot_calibration(run_dir, out_dir):
     return True
 
 
-def plot_margin_dist(run_dir, out_dir):
-    data = _load_json(os.path.join(run_dir, "boundary_log.json"))
+def extract_margin_histogram(data):
+    """Extract the latest real-test margin histogram from a boundary log."""
     if not data:
-        return False
-    records = data if isinstance(data, list) else data.get("records") or [data]
+        return None
+    records = data if isinstance(data, list) else data.get("tasks") or data.get("records") or [data]
+    if not records:
+        return None
     last = records[-1]
     real = last.get("real_test", {}).get("true_class_margin") or last.get("real_test", {})
     hist = real.get("histogram") if isinstance(real, dict) else None
     if not hist:
-        return False
+        return None
     counts = hist.get("counts") or hist
     if not isinstance(counts, list):
+        return None
+    return hist
+
+
+def plot_margin_dist(run_dir, out_dir):
+    data = _load_json(os.path.join(run_dir, "boundary_log.json"))
+    hist = extract_margin_histogram(data)
+    if not hist:
         return False
+    counts = hist.get("counts") or hist
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.bar(range(len(counts)), counts, color="seagreen")
     ax.set_xlabel("margin bin")

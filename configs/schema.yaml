@@ -45,7 +45,7 @@ boundary_robust_eval: true
 robust_eval_max_batches: null
 # Read-only diagnostics run only for persisted runs (offlog=true). Every pass
 # restores Python/NumPy/Torch RNG streams and all model train/eval flags.
-boundary_diagnostics: true
+boundary_diagnostics: false
 boundary_margin_threshold: 0.0
 boundary_margin_band: 0.1
 boundary_histogram_bins: 20

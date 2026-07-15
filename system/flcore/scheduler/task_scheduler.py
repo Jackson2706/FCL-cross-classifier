@@ -11,6 +11,7 @@ from typing import Dict, Iterable, Mapping, Optional
 
 from flcore.metrics.average_anytime_accuracy import metric_average_anytime_accuracy
 from flcore.metrics.backward_transfer import metric_backward_transfer
+from flcore.utils.json_io import atomic_write_json
 
 
 ASYNC_CONFIG_DEFAULTS = {
@@ -348,9 +349,7 @@ class TaskScheduler:
     def save_schedule(self, path, run_seed=None):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w") as handle:
-            json.dump(self.materialized_schedule(run_seed), handle, indent=2, sort_keys=True, allow_nan=False)
-            handle.write("\n")
+        atomic_write_json(path, self.materialized_schedule(run_seed), "async_schedule.json")
 
 
 def _as_bool(value):

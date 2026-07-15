@@ -13,7 +13,7 @@ BOUNDARY_CONFIG_DEFAULTS = {
     "density_tau": None,
     "boundary_robust_eval": True,
     "robust_eval_max_batches": None,
-    "boundary_diagnostics": True,
+    "boundary_diagnostics": False,
     "boundary_margin_threshold": 0.0,
     "boundary_margin_band": 0.1,
     "boundary_histogram_bins": 20,

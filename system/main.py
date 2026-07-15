@@ -292,6 +292,9 @@ if __name__ == "__main__":
                         'simulate_bad_clients', 'use_filter', 'filter_threshold',
                         'run_name', 'replay_ratio']
     if _is_yaml:
+        # Limitation: a CLI value equal to its argparse default is indistinguishable
+        # from omission (and type=bool cannot reliably express false). Set those
+        # explicit values in YAML instead.
         _defaults = parser.parse_args([])
         if args.note is not None:
             cfdct['note'] = args.note

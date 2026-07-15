@@ -4,6 +4,7 @@ import json
 import os
 
 import torch
+from flcore.utils.json_io import atomic_write_json
 
 
 class ReliabilityLogger:
@@ -34,8 +35,8 @@ class ReliabilityLogger:
                 batch["density_distance"] = density_distance.detach().cpu().float()
                 batch["density_tau"] = float(density_tau)
             self._batches.append(batch)
-        except Exception:
-            pass
+        except Exception as error:
+            print(f"[Reliability] Warning: could not record batch: {error}")
 
     @staticmethod
     def _means_by_key(weights, keys):
@@ -104,8 +105,8 @@ class ReliabilityLogger:
             self.records.append(record)
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             self._write()
-        except Exception:
-            pass
+        except Exception as error:
+            print(f"[Reliability] Warning: could not record consolidation: {error}")
         finally:
             self._batches = []
 
@@ -122,14 +123,12 @@ class ReliabilityLogger:
                 "temperature": float(temperature),
             })
             self._write()
-        except Exception:
-            pass
+        except Exception as error:
+            print(f"[Reliability] Warning: could not record calibration: {error}")
 
     def _write(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        with open(self.path, "w") as handle:
-            json.dump({
-                "calibration": self.calibration_records,
-                "consolidations": self.records,
-            }, handle, indent=2, sort_keys=True)
-            handle.write("\n")
+        atomic_write_json(self.path, {
+            "calibration": self.calibration_records,
+            "consolidations": self.records,
+        }, "reliability_log.json")

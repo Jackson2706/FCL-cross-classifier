@@ -30,6 +30,7 @@ from flcore.clients.client_ourv2 import clientOursV2
 from flcore.hetero.aggregator import client_distill, server_distill
 from flcore.reliability.calibration import expected_calibration_error
 from flcore.reliability.logging import ReliabilityLogger
+from flcore.utils.json_io import atomic_write_json
 from flcore.reliability.objectives import (
     weighted_classification_loss,
     weighted_kl_distillation_loss,
@@ -279,7 +280,9 @@ class OursV2(Server):
                 self.save_folder,
                 reliability_cfg["reliability_accept_threshold"],
             )
-            if self.offlog else None
+            if self.offlog
+            and str(reliability_cfg["reliability_mode"]).lower() != "none"
+            else None
         )
         self.boundary_mode = str(self.boundary_config["boundary_mode"]).lower()
         if self.boundary_mode not in BOUNDARY_MODES:
@@ -290,7 +293,11 @@ class OursV2(Server):
         if self.boundary_config["prototype_feature_layer"] != "penultimate":
             raise ValueError("Only prototype_feature_layer=penultimate is supported")
         self.boundary_diagnostics_enabled = bool(
-            self.offlog and self.boundary_config["boundary_diagnostics"]
+            self.offlog
+            and (
+                self.boundary_config["boundary_diagnostics"]
+                or self.boundary_mode != "none"
+            )
         )
         self.boundary_metrics = {
             "mode": self.boundary_mode,
@@ -942,14 +949,14 @@ class OursV2(Server):
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.global_generator.parameters(), max_grad_norm
             )
-            if torch.isfinite(grad_norm):
+            if torch.isfinite(loss_g) and torch.isfinite(grad_norm):
                 self.optimizer_g.step()
                 update_skipped = False
             else:
                 self.optimizer_g.zero_grad()
                 update_skipped = True
                 print(
-                    "[Generator Distillation] Skipped update due to non-finite gradient norm."
+                    "[Generator Distillation] Skipped update due to non-finite loss or gradient norm."
                 )
             self.last_generator_losses = {
                 "step": int(step),
@@ -1441,9 +1448,7 @@ class OursV2(Server):
             "regularizer_consolidations": self.boundary_metrics["consolidations"],
             "tasks": self.boundary_metrics["diagnostics"],
         }
-        with open(path, mode="w") as file:
-            json.dump(payload, file, indent=2, sort_keys=True, allow_nan=False)
-            file.write("\n")
+        atomic_write_json(path, payload, "boundary_log.json")
 
     def _record_boundary_robustness(self, task, global_round):
         """Evaluate real test data under FGSM/PGD without changing RNG or mode."""
@@ -1648,10 +1653,9 @@ class OursV2(Server):
                     )
                 self._privacy_records.append(record)
             path = os.path.join(self.save_folder, "privacy_log.json")
-            with open(path, "w") as file:
-                json.dump({"consolidations": self._privacy_records}, file,
-                          indent=2, sort_keys=True, allow_nan=False)
-                file.write("\n")
+            atomic_write_json(
+                path, {"consolidations": self._privacy_records}, "privacy_log.json"
+            )
             print(
                 "[Privacy proxy] input-NN min="
                 f"{record['nn_distance']['min']} score="

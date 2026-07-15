@@ -53,7 +53,9 @@ def filter_private_metrics(data):
     """Drop metrics whose keys indicate raw client data or high-risk payloads."""
     return {
         key: value for key, value in data.items()
-        if not any(part in str(key).lower() for part in _PRIVATE_LOG_PARTS)
+        if key is not None
+        and str(key).strip()
+        and not any(part in str(key).lower() for part in _PRIVATE_LOG_PARTS)
         and re.search(r"(?:^|[/_])client_?\d+(?:$|[/_])", str(key).lower()) is None
         and (value is None or isinstance(value, (str, bool, int, float)))
     }

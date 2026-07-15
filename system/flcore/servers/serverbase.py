@@ -34,7 +34,12 @@ from flcore.hetero.model_factory import (
     resolve_heterogeneity_config,
 )
 from flcore.utils.json_io import atomic_write_json
-from flcore.tracking import build_async_round_metrics, build_boundary_metrics, build_final_metrics
+from flcore.tracking import (
+    build_async_round_metrics,
+    build_boundary_metrics,
+    build_communication_metrics,
+    build_final_metrics,
+)
 from utils.data_utils import *
 
 class Server(object):
@@ -380,12 +385,7 @@ class Server(object):
                 result["train/client_loss_std"] = float(np.std(client_losses))
             current = self.communication_accountant.as_dict()
             previous = (self._round_metric_state or {}).get("communication", current)
-            result.update({
-                "communication/total_gb": current["total_mb"] / 1024.0,
-                "communication/round_gb": (current["total_mb"] - previous["total_mb"]) / 1024.0,
-                "communication/client_upload_gb": (current["uplink_mb"] - previous["uplink_mb"]) / 1024.0,
-                "communication/server_broadcast_gb": (current["downlink_mb"] - previous["downlink_mb"]) / 1024.0,
-            })
+            result.update(build_communication_metrics(current, previous))
             state = self._round_metric_state or {}
             if "start" in state:
                 result["runtime/round_seconds"] = max(0.0, time.perf_counter() - state["start"])

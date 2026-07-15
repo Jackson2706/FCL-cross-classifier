@@ -5,6 +5,8 @@ import math
 
 
 def _put(result, key, value):
+    if key is None or not str(key).strip():
+        return
     if value is None or isinstance(value, (Mapping, list, tuple)):
         return
     try:
@@ -14,6 +16,27 @@ def _put(result, key, value):
         return
     if isinstance(value, (bool, int, float)):
         result[key] = value
+
+
+def build_communication_metrics(current, previous=None):
+    """Build cumulative traffic scalars and, when available, the round delta."""
+
+    current = current if isinstance(current, Mapping) else {}
+    result = {}
+    total_mb = current.get("total_mb")
+    uplink_mb = current.get("uplink_mb")
+    downlink_mb = current.get("downlink_mb")
+    if total_mb is not None:
+        _put(result, "communication/total_gb", float(total_mb) / 1024.0)
+    if uplink_mb is not None:
+        _put(result, "communication/client_upload_gb", float(uplink_mb) / 1024.0)
+    if downlink_mb is not None:
+        _put(result, "communication/server_broadcast_gb", float(downlink_mb) / 1024.0)
+    if isinstance(previous, Mapping) and total_mb is not None:
+        previous_total_mb = previous.get("total_mb", total_mb)
+        _put(result, "communication/round_gb",
+             (float(total_mb) - float(previous_total_mb)) / 1024.0)
+    return result
 
 
 def build_boundary_metrics(summary, task_id=None, glob_iter=None):
@@ -85,9 +108,7 @@ def build_final_metrics(summary, runtime_seconds=None):
     result = build_boundary_metrics(summary)
     result = {key: value for key, value in result.items() if key not in {"eval/round", "eval/task_id"}}
     communication = (summary or {}).get("communication", {}) or {}
-    total_mb = communication.get("total_mb")
-    if total_mb is not None:
-        _put(result, "communication/total_gb", float(total_mb) / 1024.0)
+    result.update(build_communication_metrics(communication))
     _put(result, "runtime/total_seconds", runtime_seconds)
     return result
 

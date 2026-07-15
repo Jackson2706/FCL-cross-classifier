@@ -17,7 +17,8 @@ from flcore.tracking.wandb_logger import (
     sanitize_resolved_config,
 )
 from flcore.tracking.metric_forwarding import (
-    build_async_round_metrics, build_boundary_metrics, build_final_metrics,
+    build_async_round_metrics, build_boundary_metrics, build_communication_metrics,
+    build_final_metrics,
 )
 
 
@@ -51,6 +52,8 @@ def test_disabled_is_pure_noop_without_wandb():
 
 def test_privacy_filters():
     assert filter_private_metrics({
+        "": 2.0,
+        None: 3.0,
         "loss": 1.0,
         "per_client_accuracy_list": [1.0],
         "unrecognized_raw_array": [1.0],
@@ -68,7 +71,7 @@ def test_metric_forwarding_builders():
             "backward_transfer": -0.1, "average_anytime_accuracy": 0.7,
         },
         "latest_task_accuracy": {"0": 0.9, "1": None},
-        "communication": {"total_mb": 2048.0},
+        "communication": {"total_mb": 2048.0, "uplink_mb": 512.0, "downlink_mb": 1536.0},
         "generator": {"total": 1.2, "cls": 0.3, "kd": 0.4, "bn": 0.5},
         "reliability": {
             "mean_weight": 0.6, "std_weight": 0.1, "min_weight": 0.2,
@@ -98,7 +101,20 @@ def test_metric_forwarding_builders():
     assert "eval/task_accuracy/task_1" not in flat
     final = build_final_metrics(summary, runtime_seconds=12.0)
     assert final["communication/total_gb"] == 2.0
+    assert final["communication/client_upload_gb"] == 0.5
+    assert final["communication/server_broadcast_gb"] == 1.5
     assert final["runtime/total_seconds"] == 12.0
+    communication = build_communication_metrics(
+        {"total_mb": 3072.0, "uplink_mb": 1024.0, "downlink_mb": 2048.0},
+        {"total_mb": 1024.0, "uplink_mb": 256.0, "downlink_mb": 768.0},
+    )
+    assert communication == {
+        "communication/total_gb": 3.0,
+        "communication/client_upload_gb": 1.0,
+        "communication/server_broadcast_gb": 2.0,
+        "communication/round_gb": 2.0,
+    }
+    assert "" not in communication
     state = Namespace(active=True, dropped=False)
     dropped = Namespace(active=False, dropped=True)
     async_flat = build_async_round_metrics(

@@ -1,5 +1,6 @@
 import copy
 import time
+import statistics
 
 import torch
 from flcore.clients.clientbase import Client
@@ -65,6 +66,7 @@ class clientOursV2(Client):
         start_time = time.time()
         
         scaler = GradScaler()
+        round_losses = []
         
         for epoch in range(self.local_epochs):
             
@@ -80,6 +82,7 @@ class clientOursV2(Client):
                 with autocast():
                     outputs = self.model(x)
                     loss = self.loss(outputs, y)
+                round_losses.append(float(loss.detach()))
                 
                 # Backward & Step với GradScaler
                 scaler.scale(loss).backward()
@@ -95,6 +98,7 @@ class clientOursV2(Client):
 
         self.train_time_cost['num_rounds'] += 1
         self.train_time_cost['total_cost'] += time.time() - start_time
+        self.last_train_loss = statistics.mean(round_losses) if round_losses else None
 
     def create_augmented_dataset(self, train_data):
         if self.generator is None or self.current_task == 0:

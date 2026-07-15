@@ -1,6 +1,7 @@
 """Failure-tolerant, privacy-aware Weights & Biases integration."""
 
 import os
+import re
 from collections.abc import Mapping
 
 from flcore.utils.json_io import atomic_write_json
@@ -53,6 +54,7 @@ def filter_private_metrics(data):
     return {
         key: value for key, value in data.items()
         if not any(part in str(key).lower() for part in _PRIVATE_LOG_PARTS)
+        and re.search(r"(?:^|[/_])client_?\d+(?:$|[/_])", str(key).lower()) is None
         and (value is None or isinstance(value, (str, bool, int, float)))
     }
 

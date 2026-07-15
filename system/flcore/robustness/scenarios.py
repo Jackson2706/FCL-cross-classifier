@@ -210,8 +210,17 @@ class RobustnessScenario:
         bad = [float(value) for cid, value in trust.items() if self.is_corrupted(cid)]
         clean = [float(value) for cid, value in trust.items() if not self.is_corrupted(cid)]
         retained = set(retained_client_ids or [])
+        filtered = (
+            sorted(set(self.corrupted_client_ids) - retained) if retained else []
+        )
+        detected = len(filtered)
         return {
             "mode": sorted(self.modes),
+            "corrupted_client_fraction": len(self.corrupted_client_ids) / max(1, self.num_clients),
+            "detected_corrupted_clients": detected,
+            "filter_drop_rate": detected / max(1, len(self.corrupted_client_ids)),
+            "label_noise_rate": float(self.config["label_noise_rate"]),
+            "bn_noise_std": float(self.config["bn_noise_std"]),
             "corrupted_client_ids": list(self.corrupted_client_ids),
             "clean_client_ids": [
                 cid for cid in range(self.num_clients) if not self.is_corrupted(cid)
@@ -221,8 +230,6 @@ class RobustnessScenario:
             "retained_corrupted_client_ids": sorted(
                 retained.intersection(self.corrupted_client_ids)
             ),
-            "filtered_corrupted_client_ids": sorted(
-                set(self.corrupted_client_ids) - retained
-            ) if retained else [],
+            "filtered_corrupted_client_ids": filtered,
             "client_dropout": "reuses TaskScheduler.client_dropout_rate; no duplicate dropout RNG",
         }

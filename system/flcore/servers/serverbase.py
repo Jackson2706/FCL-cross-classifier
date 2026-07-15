@@ -34,6 +34,7 @@ from flcore.hetero.model_factory import (
     resolve_heterogeneity_config,
 )
 from flcore.utils.json_io import atomic_write_json
+from flcore.tracking import build_async_round_metrics, build_boundary_metrics, build_final_metrics
 from utils.data_utils import *
 
 class Server(object):
@@ -63,6 +64,9 @@ class Server(object):
         self.time_threthold = args.time_threthold
         self.offlog = args.offlog
         self.tracker = None
+        self._run_start_time = time.perf_counter()
+        self._round_metric_state = None
+        self._task_start_time = None
         self.save_folder = f"{args.out_folder}/{args.dataset}_{args.algorithm}_{args.model_str}_{args.optimizer}_lr{args.local_learning_rate}_{args.note}" if args.note else f"{args.out_folder}/{args.dataset}_{args.algorithm}_{args.model_str}_{args.optimizer}_lr{args.local_learning_rate}"
         if self.offlog:    
             if os.path.exists(self.save_folder):
@@ -236,10 +240,8 @@ class Server(object):
                 "average_anytime_accuracy": None,
             }
 
-    def _write_metrics_summary(self):
-        """Write additive machine-readable metrics without affecting CSV logs."""
-        if not self.offlog:
-            return
+    def _build_metrics_summary(self):
+        """Build the existing journal snapshot for JSON and scalar forwarding."""
         try:
             communication = self.communication_accountant.as_dict()
             server_compute = self.server_compute_timer.as_dict()
@@ -283,7 +285,12 @@ class Server(object):
                     })
             boundary = getattr(self, "boundary_metrics", None)
             if boundary:
-                summary.setdefault("robustness", {})["boundary"] = boundary
+                boundary_summary = dict(boundary)
+                if boundary.get("diagnostics"):
+                    boundary_summary["latest_diagnostic"] = boundary["diagnostics"][-1]
+                if boundary.get("robust_accuracy"):
+                    boundary_summary["latest_robust_accuracy"] = boundary["robust_accuracy"][-1]
+                summary.setdefault("robustness", {})["boundary"] = boundary_summary
             scenario = getattr(self, "robustness_scenario", None)
             if scenario is not None and scenario.enabled:
                 summary.setdefault("robustness", {})["attacks"] = scenario.summary(
@@ -306,10 +313,117 @@ class Server(object):
                 summary["heterogeneity"]["server_distillation_seconds"] = (
                     self.server_distillation_timer.as_dict()
                 )
+                summary["heterogeneity"]["distillation_loss"] = getattr(
+                    self, "last_distillation_loss", None
+                )
+            if self.global_accuracy_matrix:
+                summary["latest_task_accuracy"] = {
+                    str(index): float(value)
+                    for index, value in enumerate(self.global_accuracy_matrix[-1])
+                    if np.isfinite(value)
+                }
+            generator = getattr(self, "last_generator_losses", None)
+            if generator is not None:
+                summary["generator"] = dict(generator)
+            classifier = getattr(self, "last_classifier_losses", None)
+            if classifier is not None:
+                summary["classifier"] = dict(classifier)
+            task_seconds = (
+                max(0.0, time.perf_counter() - self._task_start_time)
+                if self._task_start_time is not None else None
+            )
+            current_task = str(max(0, len(self.global_accuracy_matrix) - 1))
+            summary["runtime"] = {
+                "task_seconds": task_seconds,
+                "server_cotrain_seconds": server_compute.get("per_task", {}).get(current_task),
+            }
+            return summary
+        except Exception as error:
+            print(f"[Metrics] Warning: could not build metrics summary: {error}")
+            return {}
+
+    def _write_metrics_summary(self):
+        """Write additive machine-readable metrics without affecting CSV logs."""
+        if not self.offlog:
+            return
+        try:
+            summary = self._build_metrics_summary()
             summary_path = os.path.join(self.save_folder, "metrics_summary.json")
             atomic_write_json(summary_path, summary, "metrics_summary.json")
         except Exception as error:
             print(f"[JSON] Warning: could not write metrics_summary.json: {error}")
+
+    def _start_round_metrics(self):
+        try:
+            self._round_metric_state = {
+                "start": time.perf_counter(),
+                "communication": self.communication_accountant.as_dict(),
+                "client_train": {
+                    client.id: float(client.train_time_cost.get("total_cost", 0.0))
+                    for client in self.clients
+                },
+            }
+        except Exception:
+            self._round_metric_state = None
+
+    def _round_tracking_metrics(self, train_loss, stats_train, round_states=None):
+        result = {"train/loss": train_loss}
+        try:
+            participating = self.selected_clients or self.clients
+            client_losses = [
+                float(client.last_train_loss)
+                for client in participating
+                if getattr(client, "last_train_loss", None) is not None
+            ]
+            if client_losses:
+                result["train/client_loss_mean"] = float(np.mean(client_losses))
+                result["train/client_loss_std"] = float(np.std(client_losses))
+            current = self.communication_accountant.as_dict()
+            previous = (self._round_metric_state or {}).get("communication", current)
+            result.update({
+                "communication/total_gb": current["total_mb"] / 1024.0,
+                "communication/round_gb": (current["total_mb"] - previous["total_mb"]) / 1024.0,
+                "communication/client_upload_gb": (current["uplink_mb"] - previous["uplink_mb"]) / 1024.0,
+                "communication/server_broadcast_gb": (current["downlink_mb"] - previous["downlink_mb"]) / 1024.0,
+            })
+            state = self._round_metric_state or {}
+            if "start" in state:
+                result["runtime/round_seconds"] = max(0.0, time.perf_counter() - state["start"])
+            prior_cost = state.get("client_train", {})
+            result["runtime/client_train_seconds"] = sum(
+                max(0.0, float(client.train_time_cost.get("total_cost", 0.0)) - prior_cost.get(client.id, 0.0))
+                for client in self.clients
+            )
+            if torch.cuda.is_available():
+                result["gpu/memory_allocated_gb"] = torch.cuda.memory_allocated() / 1024.0 ** 3
+                result["gpu/memory_reserved_gb"] = torch.cuda.memory_reserved() / 1024.0 ** 3
+            if getattr(self.args, "async_mode", False) and round_states is not None:
+                result.update(build_async_round_metrics(
+                    round_states, self.task_scheduler.metrics()
+                ))
+        except Exception as error:
+            print(f"[W&B] Warning: could not build round metrics: {error}")
+        return result
+
+    def _log_boundary_metrics(self, task, glob_iter):
+        if self.tracker is None:
+            return
+        try:
+            self.tracker.log(
+                build_boundary_metrics(self._build_metrics_summary(), task, glob_iter),
+                step=glob_iter,
+            )
+        except Exception as error:
+            print(f"[W&B] Warning: could not forward boundary metrics: {error}")
+
+    def _log_final_summary(self):
+        if self.tracker is None:
+            return
+        try:
+            elapsed = max(0.0, time.perf_counter() - self._run_start_time)
+            self.tracker.log_summary(build_final_metrics(self._build_metrics_summary(), elapsed))
+        except Exception as error:
+            print(f"[W&B] Warning: could not forward final summary: {error}")
 
     def set_clients(self, clientObj):
         for i in range(self.num_clients):
@@ -501,7 +615,8 @@ class Server(object):
                     subdir = os.path.join(self.save_folder, f"Client_Local/Client_{c.id}")
                     log_key = f"Client_Local/Client_{c.id}/Averaged Test Accurancy"
 
-                if self.tracker is not None:
+                privacy_safe = bool(getattr(self.tracker, "cfg", {}).get("privacy_safe_mode", True)) if self.tracker is not None else True
+                if self.tracker is not None and not privacy_safe:
                     self.tracker.log({log_key: test_acc}, step=glob_iter)
                 
                 if self.offlog:
@@ -542,7 +657,8 @@ class Server(object):
                     subdir = os.path.join(self.save_folder, f"Client_Local/Client_{c.id}")
                     log_key = f"Client_Local/Client_{c.id}/Averaged Test Accurancy"
 
-                if self.tracker is not None:
+                privacy_safe = bool(getattr(self.tracker, "cfg", {}).get("privacy_safe_mode", True)) if self.tracker is not None else True
+                if self.tracker is not None and not privacy_safe:
                     self.tracker.log({log_key: test_acc}, step=glob_iter)
 
                 if self.offlog:
@@ -623,6 +739,13 @@ class Server(object):
 
         if self.tracker is not None:
             self.tracker.log(log_keys, step=glob_iter)
+            if flag == "global":
+                self.tracker.log(
+                    self._round_tracking_metrics(
+                        train_loss, stats_train, getattr(self, "_current_round_states", None)
+                    ),
+                    step=glob_iter,
+                )
 
         if self.offlog:
             os.makedirs(subdir, exist_ok=True)
@@ -671,6 +794,8 @@ class Server(object):
 
         if self.tracker is not None:
             self.tracker.log({log_key: forgetting}, step=glob_iter)
+            if flag == "global":
+                self._log_boundary_metrics(task, glob_iter)
 
         print(f"{log_key}: {forgetting:.4f}")
 
@@ -719,6 +844,8 @@ class Server(object):
 
         if self.tracker is not None:
             self.tracker.log({log_key: forgetting}, step=glob_iter)
+            if flag == "global":
+                self._log_boundary_metrics(task, glob_iter)
 
         print(f"{log_key}: {forgetting:.4f}")
 

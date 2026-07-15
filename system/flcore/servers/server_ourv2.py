@@ -3,6 +3,7 @@ import json
 import math
 import os
 import random
+import time
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -256,6 +257,8 @@ class OursV2(Server):
             getattr(args, "generator_grad_clip", 10.0)
         )
         self.last_generator_losses = None
+        self.last_classifier_losses = None
+        self.last_distillation_loss = None
         self.distillation_enabled = bool(
             self.heterogeneity_config.enabled
             and self.heterogeneity_config.aggregation_mode
@@ -501,6 +504,7 @@ class OursV2(Server):
             return self._train_async()
 
         for task in self.task_scheduler.task_sequence():
+            self._task_start_time = time.perf_counter()
             task_states = self.task_scheduler.state_for_round(task * max(1, self.global_rounds))
             print(f"\n--- Task {task} ---")
             if task > 0:
@@ -509,6 +513,8 @@ class OursV2(Server):
             for i in range(self.global_rounds):
                 global_round = i + task * self.global_rounds
                 round_states = self.task_scheduler.state_for_round(global_round)
+                self._current_round_states = round_states
+                self._start_round_metrics()
                 self.selected_clients = self.select_clients()
 
                 # SIMULATE ATTACK/NOISE: Inject massive noise into the first 2 selected clients
@@ -552,6 +558,7 @@ class OursV2(Server):
             self.eval_task(task=task, glob_iter=task, flag="global")
             self.send_models()
             self._write_metrics_summary()
+        self._log_final_summary()
 
     def _train_async(self):
         """Run asynchronous client clocks with completion-watermark consolidation."""
@@ -559,7 +566,9 @@ class OursV2(Server):
         total_rounds = self.num_tasks * self.global_rounds
         previous_states = None
         for global_round in range(total_rounds):
+            self._start_round_metrics()
             round_states = self.task_scheduler.state_for_round(global_round)
+            self._current_round_states = round_states
             pending_completions = []
             for client in self.clients:
                 state = round_states[client.id]
@@ -622,6 +631,7 @@ class OursV2(Server):
         self._consolidate_ready_boundaries(final_round)
 
         self._write_metrics_summary()
+        self._log_final_summary()
 
     def _cache_async_task_upload(self, client, task_id):
         """Retain the local upload before the next global broadcast replaces it."""
@@ -1046,6 +1056,8 @@ class OursV2(Server):
         shuffle_idx = torch.randperm(total_samples)
         all_labels = all_labels[shuffle_idx].to(self.device)
         num_batches = math.ceil(total_samples / batch_size)
+        replay_losses = []
+        adversarial_losses = []
         
         for i in range(num_batches):
             start_idx = i * batch_size
@@ -1096,6 +1108,8 @@ class OursV2(Server):
                 )
                 loss = torch.mean(weights * per_sample_ce)
 
+            replay_losses.append(float(loss.detach()))
+
             density_mask = density_distance = density_threshold = None
             if self.boundary_mode in {"fgsm", "pgd_light"}:
                 with torch.no_grad():
@@ -1127,6 +1141,7 @@ class OursV2(Server):
                     self.boundary_config["lambda_adv"],
                 )
                 loss = loss + adversarial_loss
+                adversarial_losses.append(float(adversarial_loss.detach()))
                 self._boundary_gate_batches.append({
                     "gate": density_mask.detach().cpu(),
                     "distance": density_distance.detach().cpu(),
@@ -1164,6 +1179,11 @@ class OursV2(Server):
                 )
             loss.backward()
             self.optimizer_c.step()
+
+        self.last_classifier_losses = {
+            "loss_replay": float(np.mean(replay_losses)) if replay_losses else None,
+            "loss_adv": float(np.mean(adversarial_losses)) if adversarial_losses else None,
+        }
 
         if self.reliability_logger is not None:
             self.reliability_logger.finish_consolidation(
@@ -1804,6 +1824,7 @@ class OursV2(Server):
                 self._distillation_temperature(),
                 optimizer=self.optimizer_c,
             )
+        self.last_distillation_loss = float(loss)
         upload_clients = [
             next(client for client in self.clients if client.id == client_id)
             for client_id in self.client_info_dict
